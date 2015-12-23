@@ -11,9 +11,11 @@ npm install simple-builder
 ## Use cases
 SQL query builders (such as `squel.js`) sometimes feel heavy and it is not easy to transform your SQL knowledge to working query without reading the documentation. It is especially true for complicated queries with subqueries.
 
-This library enables you to write and format queries using pure Javascript arrays, you can use the `question mark syntax` with matching variables without caring about the order in the result - the only value order you care about is the natural one, question mark(s) should always be followed by matching number of values.
+The aim is to enable you to write and format queries using pure Javascript arrays, you can use the question mark syntax with matching variables without caring about the order in the result - the only value order you care about is the natural one, question mark(s) should always be followed by matching number of values.
 
-This library has zero dependencies.
+## Dependencies
+
+This library has no dependencies.
 
 ## Limitations
 
