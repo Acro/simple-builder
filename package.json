@@ -17,5 +17,9 @@
     "mysql",
     "postgresql",
     "postgres"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/Acro/simple-builder"
+  }
 }
