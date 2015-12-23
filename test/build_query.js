@@ -38,3 +38,10 @@ var q5 = [
 ]
 
 console.log(JSON.stringify(build(q5), null, 4))
+
+var q6 = [
+	"INSERT INTO", "users",
+	"VALUES ?", { username: "something", gender: "male" }
+]
+
+console.log(JSON.stringify(build(q6), null, 4))

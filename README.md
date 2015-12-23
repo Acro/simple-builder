@@ -76,6 +76,26 @@ var rows = yield db.query(query.text, query.values)
 }
 */
 
+// INSERT query example
+
+
+var query = build([
+  "INSERT INTO", "users",
+  "VALUES ?", { username: "something", gender: "male" }
+])
+
+var rows = yield db.query(query.text, query.values)
+
+/*
+{
+  "text": "INSERT INTO users (username,gender) VALUES ($1,$2)",
+  "values": [
+    "something",
+    "male"
+  ]
+}
+*/
+
 ```
 
 ## License
