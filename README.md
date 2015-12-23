@@ -141,7 +141,7 @@ var update = {
 }
 ```
 
-The keys of the update object represents database columns.
+The keys of the update object represent database columns.
 
 ```javascript
 var current_username = "John Doe"
