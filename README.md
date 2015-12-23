@@ -170,68 +170,35 @@ var partials = [
 ```javascript
 var build = require("simple-builder")
 
+// SELECT query
 var query = build([
   "SELECT * FROM users",
-  "WHERE id = ? AND username = ?", user_id, username,
-  "OR id = ?", user_id,
-  "AND username = ?", username
+  "WHERE id = ? AND username = ?", user_id, username
 ])
+
+// { text: "SELECT * FROM users WHERE id = $1 AND username = $2", values: [ 1, "John Doe" ] }
 
 var rows = yield db.query(query.text, query.values)
 
-/*
-{
-  text: "SELECT * FROM users WHERE id = $1 AND username = $2 OR id = $3 AND username = $4",
-  values: [
-    123,
-    "sadasd?asdasd",
-    123,
-    "sadasd?asdasd"
-  ]
-}
-*/
-
-// UPDATE query example
-
+// UPDATE query
 var query = build([
   "UPDATE users SET ?", { username: "something", gender: "male" },
   "WHERE user_id = ? AND is_hidden = ?", user_id, false
 ])
 
+// { "text": "UPDATE users SET username=$1,gender=$2 WHERE user_id = $3 AND is_hidden = $4", "values": [ "something", "male", 123, false ] }
+
 var rows = yield db.query(query.text, query.values)
 
-/*
-{
-  "text": "UPDATE users SET username=$1,gender=$2 WHERE user_id = $3 AND is_hidden = $4",
-  "values": [
-    "something",
-    "male",
-    123,
-    false
-  ]
-}
-*/
-
-// INSERT query example
-
-
+// INSERT query
 var query = build([
   "INSERT INTO", "users",
   "VALUES ?", { username: "something", gender: "male" }
 ])
 
+// { "text": "INSERT INTO users (username,gender) VALUES ($1,$2)", "values": [ "something", "male" ] }
+
 var rows = yield db.query(query.text, query.values)
-
-/*
-{
-  "text": "INSERT INTO users (username,gender) VALUES ($1,$2)",
-  "values": [
-    "something",
-    "male"
-  ]
-}
-*/
-
 ```
 
 ## Dependencies
