@@ -1,0 +1,21 @@
+{
+  "name": "simple-builder",
+  "version": "1.0.0",
+  "description": "Simple SQL query string builder",
+  "main": "lib/builder.js",
+  "scripts": {
+    "test": "node test/build_query.js"
+  },
+  "author": "Ondrej Machek <acrocz@gmail.com>",
+  "license": "MIT",
+  "dependencies": {},
+  "keywords": [
+    "sql",
+    "query",
+    "builder",
+    "query builder",
+    "mysql",
+    "postgresql",
+    "postgres"
+  ]
+}
