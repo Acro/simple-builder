@@ -31,3 +31,10 @@ console.log()
 var q4 = "SELECT * FROM users"
 
 console.log(JSON.stringify(build(q4), null, 4))
+
+var q5 = [
+	"UPDATE users SET ?", { username: "something", gender: "male" },
+	"WHERE user_id = ? AND is_hidden = ?", user_id, false
+]
+
+console.log(JSON.stringify(build(q5), null, 4))

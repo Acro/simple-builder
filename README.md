@@ -34,19 +34,19 @@ Output is an object containing `text` property which is your SQL query ready to 
 ```javascript
 var build = require("simple-builder")
 
-var query = [
+var query = build([
   "SELECT * FROM users",
   "WHERE id = ? AND username = ?", user_id, username,
   "OR id = ?", user_id,
   "AND username = ?", username
-]
+])
 
-var constructed = build(query)
+var rows = yield db.query(query.text, query.values)
 
 /*
 {
-  "text": "SELECT * FROM users WHERE id = $1 AND username = $2 OR id = $3 AND username = $4",
-  "values": [
+  text: "SELECT * FROM users WHERE id = $1 AND username = $2 OR id = $3 AND username = $4",
+  values: [
     123,
     "sadasd?asdasd",
     123,
@@ -55,7 +55,26 @@ var constructed = build(query)
 }
 */
 
-var rows = yield db.query(constructed.text, constructed.values)
+// UPDATE query example
+
+var query = build([
+  "UPDATE users SET ?", { username: "something", gender: "male" },
+  "WHERE user_id = ? AND is_hidden = ?", user_id, false
+])
+
+var rows = yield db.query(query.text, query.values)
+
+/*
+{
+  "text": "UPDATE users SET username=$1,gender=$2 WHERE user_id = $3 AND is_hidden = $4",
+  "values": [
+    "something",
+    "male",
+    123,
+    false
+  ]
+}
+*/
 
 ```
 
