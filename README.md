@@ -101,7 +101,7 @@ var insertion = {
 }
 ```
 
-The keys of the insertion object represent database columns.
+The keys of the `insertion` object represent database columns.
 
 ```javascript
 var partials = [ "INSERT INTO users VALUES ?", insertion ]
@@ -127,6 +127,41 @@ var partials = [
   "INSERT INTO users (username, email)",
   "VALUES (?, ?)", insertion.username, insertion.email, 
   "RETURNING id" 
+]
+```
+
+### `UPDATE` query
+
+In a similar manner as the `INSERT`, `UPDATE` queries can also be written using update objects.
+
+```javascript
+var update = {
+  username: "Biggie Smalls",
+  gender: "female"
+}
+```
+
+The keys of the update object represents database columns.
+
+```javascript
+var current_username = "John Doe"
+var partials = [ "UPDATE users SET ?", update, "WHERE username = ?", current_username ]
+```
+
+The example above is the supported syntax for updating with an object.
+
+```javascript
+var query = build(partials)
+// { text: "UPDATE users SET username=$1,gender=$2 WHERE username=$3", values: [ "Biggie Smalls", "female", "John Doe" ] }
+```
+
+The `UPDATE` queries can still be written by hand.
+
+```javascript
+var partials = [ 
+  "UPDATE users",
+  "SET username = ?, gender = ?", update.username, update.gender
+  "WHERE username = ?", current_username
 ]
 ```
 
