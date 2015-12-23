@@ -90,6 +90,8 @@ var query = build(partials)
 // { text: "SELECT * FROM friends WHERE friend_id = $1 ORDER BY created_at", values: [ 1 ] }
 ```
 
+### `INSERT` query
+
 Some query builders are making `INSERT` queries easy to write by using insertion object.
 
 ```javascript
@@ -116,6 +118,16 @@ When `VALUES ?` substring is found in the SQL partial, the next value is expecte
 ```javascript
 var query = build(partials)
 // { text: "INSERT INTO users (username,email) VALUES ($1,$2) RETURNING id", values: [ "John Doe", "john@doe.wtf" ] }
+```
+
+The `INSERT` queries can still be written by hand.
+
+```javascript
+var partials = [ 
+  "INSERT INTO users (username, email)",
+  "VALUES (?, ?)", insertion.username, insertion.email, 
+  "RETURNING id" 
+]
 ```
 
 ## Examples
