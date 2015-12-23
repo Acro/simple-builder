@@ -8,28 +8,53 @@
 npm install simple-builder
 ```
 
-## Use cases
-SQL query builders (such as `squel.js`) sometimes feel heavy and it is not easy to transform your SQL knowledge to working query without reading the documentation. It is especially true for complicated queries with subqueries.
+## Motivation
+SQL query builders (such as `squel.js`) often feel heavy. It is not easy to create your SQL query without reading the documentation.
 
-The aim is to enable you to write and format queries using pure Javascript arrays, you can use the question mark syntax with matching variables without caring about the order in the result - the only value order you care about is the natural one, question mark(s) should always be followed by matching number of values.
+The aim of `simple-builder` is
 
-## Dependencies
-
-This library has no dependencies.
-
-## Limitations
-
-The output is only suitable for PostgreSQL drivers such as `pg`. MySQL coming soon.
+- to make use of your existing SQL knowledge
+- to make queries easy-to-read and easy-to-follow
+- to eliminate annoyances of different client libraries
 
 ## API
 
-### build(query)
-`query` passed into the build function can be either array of SQL code mixed with values or plain string.
+### `build(Array partials)` -> `Object`
+The `partials` is an `Array` consisting of:
 
-Output is an object containing `text` property which is your SQL query ready to be passed into your SQL client library. If values are present in your `query` input, then output also contains `values` property which is an array of values.
+- strings
+- numbers
+- arrays
+- boolean values
+- objects
 
+All of them are partial values for constructing resulting `Object`.
 
-## Example
+```javascript
+var email = "john@doe.wtf"
+var partials = [ "SELECT * FROM users WHERE email = ?", email ]
+```
+
+Every query is constructed by creating an `partials` array and passing it to the `simple-builder`.
+
+```javascript
+var build = require("simple-builder")
+
+var query = build(partials)
+```
+
+The output of `simple-builder` is always an `Object` containing:
+
+- `text` property
+- `values` property
+
+The `values` property may not be set when there was no variable in your `partials` array.
+
+```javascript
+var rows = yield db.query(query.text, query.values)
+```
+
+## Examples
 
 ```javascript
 var build = require("simple-builder")
@@ -97,6 +122,14 @@ var rows = yield db.query(query.text, query.values)
 */
 
 ```
+
+## Dependencies
+
+This library has no dependencies.
+
+## Limitations
+
+The output is only suitable for PostgreSQL drivers such as `pg`. MySQL coming soon.
 
 ## License
 
