@@ -5,7 +5,7 @@
 ## Installation
 
 ```javascript
-npm install simple-builder
+npm install simple-builder --save
 ```
 
 ## Motivation
