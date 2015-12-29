@@ -1,10 +1,12 @@
-var build = require("../lib/builder").mysql
+var build = require("../lib/builder").pg
+
+var projection = [ "id", "username" ]
 
 var user_id = 123
 var username = "sadasd?asdasd"
 
 var q = [
-	"SELECT * FROM users",
+	"SELECT", projection, "FROM users",
 	"WHERE id = ? AND username = ?", user_id, username,
 	"OR id = ?", user_id,
 	"AND username = ?", username
@@ -25,7 +27,7 @@ var q3 = [
 	"FROM users"
 ]
 
-console.log(JSON.stringify(build(q3), null, 4))
+console.log(JSON.stringify(build("SELECT", projection, "FROM users"), null, 4))
 console.log()
 
 var q4 = "SELECT * FROM users"
@@ -56,4 +58,4 @@ var q7 = [
 	"VALUES (?, ?)", user.username, user.gender
 ]
 
-console.log(JSON.stringify(build(q7), null, 4))
+console.log(JSON.stringify(build("INSERT INTO users (username, gender) VALUES (?, ?)", user.username, user.gender), null, 4))
