@@ -1,4 +1,4 @@
-var build = require("../lib/builder.js")
+var build = require("../lib/builder").mysql
 
 var user_id = 123
 var username = "sadasd?asdasd"
