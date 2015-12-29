@@ -41,7 +41,7 @@ var partials = [ "SELECT * FROM users WHERE email = ?", email ]
 Every query is constructed by creating a `partials` array and passing it to the `simple-builder`.
 
 ```javascript
-var build = require("simple-builder")
+var build = require("simple-builder").pg
 
 var query = build(partials)
 // { text: "SELECT * FROM users WHERE email = $1", values: [ "john@doe.wtf" ] }
@@ -168,7 +168,7 @@ var partials = [
 ## Examples
 
 ```javascript
-var build = require("simple-builder")
+var build = require("simple-builder").mysql
 
 // SELECT query
 var query = build([
@@ -176,9 +176,11 @@ var query = build([
   "WHERE id = ? AND username = ?", user_id, username
 ])
 
-// { text: "SELECT * FROM users WHERE id = $1 AND username = $2", values: [ 1, "John Doe" ] }
+// { text: "SELECT * FROM users WHERE id = ? AND username = ?", values: [ 1, "John Doe" ] }
 
 var rows = yield db.query(query.text, query.values)
+
+var build = require("simple-builder").pg
 
 // UPDATE query
 var query = build([
@@ -207,7 +209,7 @@ This library has no dependencies.
 
 ## Limitations
 
-The output is only suitable for PostgreSQL drivers such as `pg`. MySQL coming soon.
+The output is only suitable for MySQL (`mysql, `mysql2`) and PostgreSQL (`pg`) drivers.
 
 ## License
 
