@@ -22,8 +22,9 @@ The aim of `simple-builder` is
 ## API
 
 ### `build(Array partials)` -> `Object`
+### `build(Arguments partials)` -> `Object`
 
-The `partials` is an `Array` consisting of:
+The `partials` can be either an `Array` or plain function `arguments` consisting of:
 
 - strings
 - numbers
@@ -210,6 +211,11 @@ This library has no dependencies.
 ## Limitations
 
 The output is only suitable for MySQL (`mysql, `mysql2`) and PostgreSQL (`pg`) drivers.
+
+```javascript
+var build = require("simple-builder").pg
+var build = require("simple-builder").mysql
+```
 
 ## License
 
