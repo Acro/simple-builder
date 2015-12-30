@@ -210,7 +210,7 @@ This library has no dependencies.
 
 ## Limitations
 
-The output is only suitable for `mysql, `mysql2` and `pg` drivers.
+The output is only suitable for `mysql`, `mysql2` and `pg` drivers.
 
 ```javascript
 var build = require("simple-builder").pg
