@@ -59,3 +59,10 @@ var q7 = [
 ]
 
 console.log(JSON.stringify(build("INSERT INTO users (username, gender) VALUES (?, ?)", user.username, user.gender), null, 4))
+
+var where_cond = {
+	username: "something",
+	gender: "male"
+}
+
+console.log(JSON.stringify(build("SELECT * FROM users WHERE ?", where_cond), null, 4))
