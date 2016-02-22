@@ -1,6 +1,6 @@
 {
   "name": "simple-builder",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Simple SQL query string builder",
   "main": "lib/builder.js",
   "scripts": {
