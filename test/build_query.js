@@ -66,3 +66,5 @@ var where_cond = {
 }
 
 console.log(JSON.stringify(build("SELECT * FROM users WHERE ?", where_cond), null, 4))
+
+console.log(JSON.stringify(build("SELECT id FROM users WHERE created_at > ?", new Date), null, 4))
