@@ -141,6 +141,39 @@ class Single {
 
 type Piece = { text: string } | { placeholder: true }
 
+/**
+ * Consume a quoted run starting just past its opening delimiter, emitting the
+ * text verbatim, and return the index just past the closing delimiter. The
+ * delimiter is escaped by doubling it; `escapes` additionally honours
+ * backslash escapes. An unterminated run consumes the rest of the fragment
+ * rather than guessing.
+ */
+const consumeQuoted = (
+  fragment: string,
+  start: number,
+  quote: string,
+  escapes: boolean,
+  emit: (s: string) => void
+): number => {
+  const n = fragment.length
+  let i = start
+  while (i < n) {
+    if (escapes && fragment[i] === '\\' && i + 1 < n) {
+      emit(fragment[i] + fragment[i + 1])
+      i += 2
+      continue
+    }
+    if (fragment[i] === quote) {
+      if (fragment[i + 1] === quote) { emit(quote + quote); i += 2; continue }
+      emit(quote)
+      return i + 1
+    }
+    emit(fragment[i])
+    i++
+  }
+  return i
+}
+
 const lex = (fragment: string, dialect: Dialect): Piece[] => {
   const pieces: Piece[] = []
   let buf = ''
@@ -161,44 +194,26 @@ const lex = (fragment: string, dialect: Dialect): Piece[] => {
       continue
     }
 
-    // Single-quoted string literal. `''` escapes everywhere; MySQL also honours
-    // backslash escapes unless NO_BACKSLASH_ESCAPES is set.
+    // Single-quoted string literal. `''` escapes everywhere. Backslash also
+    // escapes in MySQL (unless NO_BACKSLASH_ESCAPES) and in a Postgres E'…'
+    // escape string — but NOT in a standard Postgres string, where
+    // standard_conforming_strings makes backslash an ordinary character.
     if (c === "'") {
+      const escapes = dialect === 'mysql' || /(?:^|[^A-Za-z0-9_$])[Ee]$/.test(buf)
       buf += c
       i++
-      while (i < n) {
-        if (dialect === 'mysql' && fragment[i] === '\\' && i + 1 < n) {
-          buf += fragment[i] + fragment[i + 1]
-          i += 2
-          continue
-        }
-        if (fragment[i] === "'") {
-          if (fragment[i + 1] === "'") { buf += "''"; i += 2; continue }
-          buf += "'"
-          i++
-          break
-        }
-        buf += fragment[i]
-        i++
-      }
+      i = consumeQuoted(fragment, i, "'", escapes, (s) => { buf += s })
       continue
     }
 
-    // Quoted identifier: "..." (pg, and MySQL under ANSI_QUOTES) or `...` (MySQL).
+    // Quoted identifier: `...` (MySQL) or "..." (a pg identifier, or a MySQL
+    // string). Either way a `?` inside is not a placeholder. Only MySQL honours
+    // backslash escapes here; pg identifiers use "" doubling alone.
     if (c === '"' || c === '`') {
-      const q = c
+      const escapes = dialect === 'mysql' && c === '"'
       buf += c
       i++
-      while (i < n) {
-        if (fragment[i] === q) {
-          if (fragment[i + 1] === q) { buf += q + q; i += 2; continue }
-          buf += q
-          i++
-          break
-        }
-        buf += fragment[i]
-        i++
-      }
+      i = consumeQuoted(fragment, i, c, escapes, (s) => { buf += s })
       continue
     }
 

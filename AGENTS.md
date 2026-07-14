@@ -33,7 +33,11 @@ security model, and gotchas in one file.
 3. **`lex()`** — the reason the `?` API is correct. Skips string literals,
    quoted identifiers, line/block comments, and dollar-quoted bodies; treats
    `?|`/`?&`/`??` as operators; honours `\?` as an escaped literal `?`. Only
-   what survives all that is a placeholder.
+   what survives all that is a placeholder. Quote runs go through
+   `consumeQuoted`, which is dialect-aware about backslash escapes: they apply
+   in MySQL and in a Postgres `E'…'` escape string, but NOT in a standard pg
+   string (`standard_conforming_strings` makes `\` ordinary) — getting this
+   wrong binds a value *inside* a string literal.
 4. **`classify()`** — positional clause detection from the text immediately
    before each placeholder (`\bVALUES\s+$` etc). `\b` is load-bearing: it keeps
    `OFFSET ?` from reading as `SET ?` and `JOIN ?` from reading as `IN ?`.

@@ -213,6 +213,35 @@ test("LEXER: '' escape inside a string literal is handled", () => {
   })
 })
 
+test("LEXER: pg E'...' escape strings honour backslash escapes", () => {
+  // Backslash escapes the quote inside E'…', so the string does not end early
+  // and the `?` inside it is not a placeholder.
+  assert.deepStrictEqual(pg(["SELECT E'a\\'b ?' AS s FROM t WHERE id = ?", 1]), {
+    text: "SELECT E'a\\'b ?' AS s FROM t WHERE id = $1",
+    values: [1],
+  })
+})
+
+test('LEXER: pg standard strings treat backslash as an ordinary character', () => {
+  // standard_conforming_strings: `\` does NOT escape, so this string ends at
+  // the second quote and the trailing ? is the placeholder.
+  assert.deepStrictEqual(pg(["SELECT 'a\\' AS s, ? AS n FROM t", 1]), {
+    text: "SELECT 'a\\' AS s, $1 AS n FROM t",
+    values: [1],
+  })
+})
+
+test('LEXER: mysql honours backslash escapes in both quote styles', () => {
+  assert.deepStrictEqual(mysql(["SELECT 'a\\'b ?' AS s FROM t WHERE id = ?", 1]), {
+    text: "SELECT 'a\\'b ?' AS s FROM t WHERE id = ?",
+    values: [1],
+  })
+  assert.deepStrictEqual(mysql(['SELECT "a\\"b ?" AS s FROM t WHERE id = ?', 1]), {
+    text: 'SELECT "a\\"b ?" AS s FROM t WHERE id = ?',
+    values: [1],
+  })
+})
+
 test('LEXER: ? inside a quoted identifier is not a placeholder', () => {
   assert.deepStrictEqual(pg(['SELECT "we?ird" FROM t WHERE id = ?', 6]), {
     text: 'SELECT "we?ird" FROM t WHERE id = $1',

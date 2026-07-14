@@ -60,8 +60,10 @@ sql.empty                    // renders to nothing (useful for conditionals)
 ## Lexing: `?` that is not a placeholder
 
 The SQL is LEXED, not scanned. A `?` is left alone inside:
-  - single-quoted string literals ('a?b', with '' escapes; MySQL \ escapes too)
-  - quoted identifiers ("a?b" and `a?b`)
+  - single-quoted string literals ('a?b'). '' escapes everywhere; backslash
+    escapes only in MySQL and in a Postgres E'a\'b ?' escape string (a standard
+    pg string treats \ as an ordinary char — standard_conforming_strings).
+  - quoted identifiers ("a?b" and `a?b`); MySQL "..." also honours \ escapes
   - line comments (-- ?) and block comments (/* ? */, nested)
   - dollar-quoted bodies ($$a ? b$$, $tag$a ? b$tag$)
 Postgres `?|` and `?&` jsonb operators are recognised and preserved.
