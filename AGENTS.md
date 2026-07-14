@@ -6,16 +6,30 @@ tests and packaging.
 
 ## Consumer API
 
-See `llms.txt` (shipped in the npm tarball) for the complete API, lexing rules,
-security model, and gotchas in one file.
+See `llms.txt` for the complete API, lexing rules, security model, recipes, and
+gotchas in one file. It is the primary surface for AI agents and ships in the
+npm tarball, so it lands at `node_modules/simple-builder/llms.txt`. Keep it in
+sync with the API — its examples are executed by `npm test`, so a wrong one
+fails the build, but a *missing* one fails silently. The other two agent-facing
+surfaces are the shipped `dist/index.d.ts` (JSDoc + `@example` blocks, which is
+what an LSP hover shows) and the runtime error messages — all three should teach
+the fix, not just state the problem.
 
 ## Working on this repo
 
 - Build: `npm run build` (tsc → `dist/`). `dist/` is git-ignored; `prepare`
   builds on install/publish.
 - Test: `npm test` — builds, compiles `test/types.test.ts` (exact-type
-  assertions; a wrong inference is a build failure), then runs the unit suite
-  under `--unhandled-rejections=strict`.
+  assertions; a wrong inference is a build failure), runs the unit suite under
+  `--unhandled-rejections=strict`, then runs the doc tests.
+- Docs are executable: `test/docs.test.cjs` parses every ```javascript block in
+  `README.md` and `llms.txt`, runs it, and compares against the documented
+  result. Docs are what humans AND AI agents copy verbatim, so drift is a build
+  failure. To be checked, an example must be a `pg(…)`/`mysql(…)` expression
+  followed by a `// { … }` comment; anything else in the block is treated as
+  setup and evaluated. Ellipses (`values: [...]`) are rejected — write the real
+  value. A floor on the checked count guards against the parser silently
+  matching nothing.
 - Fuzz: `npm run fuzz -- [iterations] [seed]` — see below. Failures print the
   seed for exact reproduction.
 - Integration: `npm run db:up` (docker Postgres + MySQL), then

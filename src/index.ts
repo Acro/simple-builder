@@ -540,18 +540,77 @@ const interpolate = (value: unknown, nodes: Node[]): void => {
   nodes.push({ k: 'value', v: value })
 }
 
+/**
+ * The `sql` tagged template — the recommended way to write a query.
+ *
+ * Every `${interpolation}` is ALWAYS a bound parameter, so you cannot forget to
+ * parameterise something. Nothing is scanned for `?`, so Postgres' jsonb `?`
+ * operators need no escaping. Fragments nest, so queries compose.
+ *
+ * @example
+ * ```ts
+ * pg(sql`SELECT * FROM users WHERE id = ${id}`)
+ *
+ * // Composition — sql.empty is the "off" branch; never concatenate strings.
+ * const active = onlyActive ? sql`AND active = ${true}` : sql.empty
+ * pg(sql`SELECT * FROM users WHERE org = ${org} ${active}`)
+ *
+ * // An array interpolates as a parenthesised list.
+ * pg(sql`SELECT * FROM users WHERE id IN ${[1, 2, 3]}`)
+ * // { text: 'SELECT * FROM users WHERE id IN ($1,$2,$3)', values: [1, 2, 3] }
+ * ```
+ */
 interface SqlTag {
   (strings: TemplateStringsArray, ...values: unknown[]): Sql
-  /** A dynamic identifier, quoted for the dialect: `sql.id('users')`,
-   *  `sql.id('public', 'users')` → `"public"."users"`. */
+  /**
+   * A dynamic identifier, quoted for the dialect. Use this for table/column
+   * names — no driver can bind an identifier to a placeholder.
+   *
+   * Note: quoting makes an identifier case-sensitive, and Postgres folds
+   * unquoted names to lower case — `sql.id('userName')` means a column literally
+   * named `userName`, not `username`.
+   *
+   * @example
+   * ```ts
+   * pg(sql`SELECT * FROM ${sql.id('public', 'users')}`)  // "public"."users"
+   * mysql(sql`SELECT * FROM ${sql.id('my table')}`)      // `my table`
+   * ```
+   */
   id(...parts: string[]): Identifier
-  /** Unescaped SQL text. NEVER pass user input. */
+  /**
+   * Unescaped SQL text — the one unsafe helper. NEVER pass user input. Map it
+   * to a fixed set of allowed values first.
+   *
+   * @example
+   * ```ts
+   * const dir = { asc: 'ASC', desc: 'DESC' }[input] || 'ASC'   // allow-list
+   * pg(sql`SELECT * FROM t ORDER BY id ${sql.raw(dir)}`)
+   * ```
+   */
   raw(text: string): Raw
-  /** Bind a value as a single parameter (arrays would otherwise expand). */
+  /**
+   * Bind a value as exactly ONE parameter. Needed for arrays, which otherwise
+   * expand into a parenthesised list — use this for a Postgres array or jsonb
+   * column.
+   *
+   * @example
+   * ```ts
+   * pg(sql`SELECT * FROM t WHERE tags = ${sql.value(['a', 'b'])}`)
+   * // { text: 'SELECT * FROM t WHERE tags = $1', values: [['a', 'b']] }
+   * ```
+   */
   value(value: unknown): Single
-  /** Join fragments/values with a separator. */
+  /**
+   * Join fragments/values with a separator — for a variable number of clauses.
+   *
+   * @example
+   * ```ts
+   * const conds = [sql`age >= ${18}`, sql`country = ${'CZ'}`]
+   * pg(sql`SELECT * FROM users WHERE ${sql.join(conds, ' AND ')}`)
+   * ```
+   */
   join(items: readonly unknown[], separator?: string): Sql
-  /** A fragment that renders to nothing. */
+  /** A fragment that renders to nothing — the "off" branch of a conditional. */
   readonly empty: Sql
 }
 
@@ -622,10 +681,39 @@ const makeBuild = (dialect: Dialect, mode: Mode): Build => {
   return builder
 }
 
-/** Postgres (`pg`) builder — renders `$1, $2, …` placeholders. */
+/**
+ * Postgres (`pg`) builder — renders `$1, $2, …` placeholders.
+ *
+ * @example Tagged template (recommended — every `${}` is always parameterised)
+ * ```ts
+ * const q = pg(sql`SELECT * FROM users WHERE id = ${id}`)
+ * // { text: 'SELECT * FROM users WHERE id = $1', values: [id] }
+ * const { rows } = await client.query(q.text, q.values)
+ * ```
+ *
+ * @example Classic `?` partials
+ * ```ts
+ * pg(['SELECT * FROM users WHERE id = ?', id])
+ * pg(['UPDATE users SET ?', { age: 37 }, 'WHERE id = ?', id])
+ * // { text: 'UPDATE users SET age=$1 WHERE id = $2', values: [37, id] }
+ * ```
+ */
 export const pg: Build = makeBuild('pg', {})
 
-/** MySQL (`mysql` / `mysql2`) builder — keeps `?` placeholders. */
+/**
+ * MySQL (`mysql` / `mysql2`) builder — keeps `?` placeholders.
+ *
+ * Prefer the driver's `execute()` over `query()`: mysql2's `query()` escapes
+ * values client-side with backslashes, which is wrong under
+ * `sql_mode=NO_BACKSLASH_ESCAPES`. `execute()` binds server-side.
+ *
+ * @example
+ * ```ts
+ * const q = mysql(sql`SELECT * FROM users WHERE id = ${id}`)
+ * // { text: 'SELECT * FROM users WHERE id = ?', values: [id] }
+ * const [rows] = await conn.execute(q.text, q.values)
+ * ```
+ */
 export const mysql: Build = makeBuild('mysql', {})
 
 /** Default export: `{ pg, mysql, sql }`, mirroring the classic

@@ -28,7 +28,7 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "prepare": "tsc",
-    "test": "tsc && tsc --noEmit --strict --target es2017 --lib es2017 --moduleResolution node test/types.test.ts && node --unhandled-rejections=strict test/index.test.cjs",
+    "test": "tsc && tsc --noEmit --strict --target es2017 --lib es2017 --moduleResolution node test/types.test.ts && node --unhandled-rejections=strict test/index.test.cjs && node --unhandled-rejections=strict test/docs.test.cjs",
     "fuzz": "tsc && node test/fuzz.cjs",
     "test:integration": "tsc && node --unhandled-rejections=strict test/integration.cjs",
     "db:up": "docker run -d --name sb-pg -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=sbtest -p 55432:5432 postgres:16-alpine && docker run -d --name sb-mysql -e MYSQL_ROOT_PASSWORD=secret -e MYSQL_DATABASE=sbtest -p 53306:3306 mysql:8",

@@ -10,6 +10,12 @@ Zero dependencies. ~16 kB. First-class TypeScript types. CJS **and** ESM.
 npm install simple-builder --save
 ```
 
+> **Using an AI coding agent?** The complete API, semantics, recipes, and
+> gotchas are in [`llms.txt`](./llms.txt) — one file, no prose, written to be
+> read by an LLM. It ships inside the npm tarball, so it is already on disk at
+> `node_modules/simple-builder/llms.txt`. Every example in it is executed and
+> verified on each CI run.
+
 ## Why
 
 Most query builders hide your SQL behind a fluent API you have to learn.
@@ -162,7 +168,8 @@ pg(['SELECT', ['id', 'username'], 'FROM users'])
 ```javascript
 // INSERT … VALUES ?
 pg(['INSERT INTO users VALUES ?', { username: 'John', email: 'j@d.wtf' }, 'RETURNING id'])
-// { text: 'INSERT INTO users (username,email) VALUES ($1,$2) RETURNING id', values: [...] }
+// { text: 'INSERT INTO users (username,email) VALUES ($1,$2) RETURNING id',
+//   values: ['John', 'j@d.wtf'] }
 
 // UPDATE … SET ?
 pg(['UPDATE users SET ?', { username: 'Biggie' }, 'WHERE id = ?', id])
