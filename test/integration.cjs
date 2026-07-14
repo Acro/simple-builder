@@ -30,8 +30,32 @@ const tests = []
 const test = (name, fn) => tests.push([name, fn])
 
 // Run a built query and return the rows. `q` is a BuildResult.
+//
+// Postgres always binds server-side, so `query` is a true prepared statement.
+//
+// For MySQL we deliberately use `execute` (a real server-side prepared
+// statement) rather than `query`, for two reasons:
+//   1. `query` makes mysql2 substitute the `?` itself, client-side — that would
+//      test mysql2's scanner, not ours. `execute` sends our text to the server
+//      verbatim, so MySQL's own parser decides how many placeholders it has.
+//   2. mysql2's client-side escaping uses backslashes (`escape("it's")` →
+//      `'it\'s'`), which breaks under sql_mode=NO_BACKSLASH_ESCAPES — it errors,
+//      and can corrupt values (`x\` round-trips as `x\\`). `execute` binds
+//      server-side and is correct in every mode.
+//
+// How strict each server is about a placeholder-count mismatch (measured, not
+// assumed — MySQL 8.4 / PG 16):
+//   pg              rejects too FEW and too MANY ("bind message supplies N
+//                   parameters, but prepared statement requires M").
+//   mysql execute() rejects too FEW ("Incorrect arguments to COM_STMT_EXECUTE")
+//                   but SILENTLY IGNORES extras.
+// So the server is a full oracle for pg, and only a half-oracle for MySQL —
+// which is why every test below asserts on the returned ROWS, not merely on the
+// query having executed. An over-count on MySQL is caught by the values coming
+// back wrong, not by an error.
 const runPg = async (client, q) => (await client.query(q.text, q.values || [])).rows
-const runMy = async (conn, q) => (await conn.query(q.text, q.values || []))[0]
+const runMy = async (conn, q) =>
+  q.values && q.values.length ? (await conn.execute(q.text, q.values))[0] : (await conn.query(q.text))[0]
 
 // ─────────────────────────────────────────────────────────────────────────
 // Postgres
@@ -218,6 +242,130 @@ test('mysql: sql tag composes fragments', async (_c, m) => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────
+// sql_mode / standard_conforming_strings matrix
+//
+// Three server settings change how SQL *lexes*, and therefore which `?` is a
+// placeholder. Each is applied to a real session AND to the builder via
+// `withMode`, so the two must agree. Verified behaviour (PG 16 / MySQL 8.4):
+//
+//   MySQL ANSI_QUOTES           "…" is an identifier ("" doubling), not a
+//                               string; `"a\"b"` is a syntax error there.
+//   MySQL NO_BACKSLASH_ESCAPES  `\` is ordinary inside literals: 'a\' is a\.
+//   pg standard_conforming_strings=off
+//                               `\` escapes inside '…' — the opposite of the
+//                               default, which treats it as ordinary.
+//
+// `''` doubling lexes identically in EVERY mode, and the `sql` tag never lexes
+// at all, so the "universal" cases below must pass in all modes unconfigured.
+// ─────────────────────────────────────────────────────────────────────────
+
+const MYSQL_MODES = [
+  { name: 'DEFAULT', sqlMode: '', mode: {} },
+  { name: 'ANSI_QUOTES', sqlMode: 'ANSI_QUOTES', mode: { ansiQuotes: true } },
+  { name: 'NO_BACKSLASH_ESCAPES', sqlMode: 'NO_BACKSLASH_ESCAPES', mode: { noBackslashEscapes: true } },
+  {
+    name: 'ANSI_QUOTES,NO_BACKSLASH_ESCAPES',
+    sqlMode: 'ANSI_QUOTES,NO_BACKSLASH_ESCAPES',
+    mode: { ansiQuotes: true, noBackslashEscapes: true },
+  },
+]
+
+const PG_MODES = [
+  { name: 'standard_conforming_strings=on', scs: 'on', mode: {} },
+  { name: 'standard_conforming_strings=off', scs: 'off', mode: { standardConformingStrings: false } },
+]
+
+const modeTests = []
+const modeTest = (name, fn) => modeTests.push([name, fn])
+
+for (const m of MYSQL_MODES) {
+  const escapes = !m.mode.noBackslashEscapes
+
+  modeTest(`mysql[${m.name}]: '' doubling is mode-proof`, async (_c, conn) => {
+    const b = my.withMode(m.mode)
+    const rows = await runMy(conn, b(["SELECT 'it''s ?' AS a, ? AS n", 1]))
+    assert.strictEqual(rows[0].a, "it's ?")
+    assert.strictEqual(rows[0].n, 1)
+  })
+
+  modeTest(`mysql[${m.name}]: backtick identifiers work in every mode`, async (_c, conn) => {
+    const b = my.withMode(m.mode)
+    const rows = await runMy(conn, b(['SELECT', sql.id('we`ird'), 'FROM quoted WHERE id = ?', 1]))
+    assert.strictEqual(rows[0]['we`ird'], 'v')
+  })
+
+  modeTest(`mysql[${m.name}]: object expansion round-trips`, async (_c, conn) => {
+    const b = my.withMode(m.mode)
+    await runMy(conn, b(['INSERT INTO modes VALUES ?', { k: m.name, n: 7 }]))
+    const rows = await runMy(conn, b(['SELECT n FROM modes WHERE ?', { k: m.name }]))
+    assert.strictEqual(rows[0].n, 7)
+  })
+
+  modeTest(`mysql[${m.name}]: the sql tag is mode-proof (never lexes)`, async (_c, conn) => {
+    const b = my.withMode(m.mode)
+    const rows = await runMy(conn, b(sql`SELECT ${"it's ?"} AS a, ${2} AS n`))
+    assert.strictEqual(rows[0].a, "it's ?")
+    assert.strictEqual(rows[0].n, 2)
+  })
+
+  modeTest(`mysql[${m.name}]: backslash-in-literal follows the mode`, async (_c, conn) => {
+    const b = my.withMode(m.mode)
+    if (escapes) {
+      // \' escapes: the ? lives inside the string, so the 2nd ? is the param.
+      const rows = await runMy(conn, b(["SELECT 'a\\'b ?' AS a, ? AS n", 1]))
+      assert.strictEqual(rows[0].a, "a'b ?")
+      assert.strictEqual(rows[0].n, 1)
+    } else {
+      // \ is ordinary: the string is 'a\' and ends at the second quote.
+      const rows = await runMy(conn, b(["SELECT 'a\\' AS a, ? AS n", 1]))
+      assert.strictEqual(rows[0].a, 'a\\')
+      assert.strictEqual(rows[0].n, 1)
+    }
+  })
+}
+
+for (const m of PG_MODES) {
+  const escapes = m.mode.standardConformingStrings === false
+
+  modeTest(`pg[${m.name}]: '' doubling is mode-proof`, async (c) => {
+    const b = pg.withMode(m.mode)
+    const rows = await runPg(c, b(["SELECT 'it''s ?' AS a, ? ::int AS n", 1]))
+    assert.deepStrictEqual(rows, [{ a: "it's ?", n: 1 }])
+  })
+
+  modeTest(`pg[${m.name}]: quoted identifiers work in every mode`, async (c) => {
+    const b = pg.withMode(m.mode)
+    const rows = await runPg(c, b(['SELECT', sql.id('MixedCase'), 'FROM quoted WHERE id = ?', 1]))
+    assert.deepStrictEqual(rows, [{ MixedCase: 'v' }])
+  })
+
+  modeTest(`pg[${m.name}]: the sql tag is mode-proof (never lexes)`, async (c) => {
+    const b = pg.withMode(m.mode)
+    const rows = await runPg(c, b(sql`SELECT ${"it's ?"}::text AS a, ${2}::int AS n`))
+    assert.deepStrictEqual(rows, [{ a: "it's ?", n: 2 }])
+  })
+
+  modeTest(`pg[${m.name}]: E'…' always honours backslash escapes`, async (c) => {
+    const b = pg.withMode(m.mode)
+    const rows = await runPg(c, b(["SELECT E'a\\'b ?' AS a, ? ::int AS n", 1]))
+    assert.deepStrictEqual(rows, [{ a: "a'b ?", n: 1 }])
+  })
+
+  modeTest(`pg[${m.name}]: backslash-in-literal follows the mode`, async (c) => {
+    const b = pg.withMode(m.mode)
+    if (escapes) {
+      // scs=off: \' escapes, so the ? is inside the string.
+      const rows = await runPg(c, b(["SELECT 'a\\'b ?' AS a, ? ::int AS n", 1]))
+      assert.deepStrictEqual(rows, [{ a: "a'b ?", n: 1 }])
+    } else {
+      // scs=on (default): \ is ordinary, so the string is 'a\'.
+      const rows = await runPg(c, b(["SELECT 'a\\' AS a, ? ::int AS n", 1]))
+      assert.deepStrictEqual(rows, [{ a: 'a\\', n: 1 }])
+    }
+  })
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Runner
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -235,6 +383,8 @@ const schema = {
     'CREATE TABLE users (username varchar(64), gender varchar(8), age int)',
     'CREATE TABLE quoted (id int, `we``ird` varchar(8))',
     "INSERT INTO quoted VALUES (1, 'v')",
+    'DROP TABLE IF EXISTS modes',
+    'CREATE TABLE modes (k varchar(64), n int)',
   ],
 }
 
@@ -246,22 +396,46 @@ const schema = {
   for (const stmt of schema.pg) await client.query(stmt)
   for (const stmt of schema.mysql) await conn.query(stmt)
 
+  const fail = async (name, err) => {
+    console.error(`✗ ${name}`)
+    console.error(err && err.stack ? err.stack : err)
+    await client.end()
+    await conn.end()
+    process.exit(1)
+  }
+
   for (const [name, fn] of tests) {
     try {
       await fn(client, conn)
       passed++
     } catch (err) {
-      console.error(`✗ ${name}`)
-      console.error(err && err.stack ? err.stack : err)
-      await client.end()
-      await conn.end()
-      process.exit(1)
+      await fail(name, err)
     }
   }
+  console.log(`✓ ${passed}/${tests.length} integration tests passed against real Postgres + MySQL`)
+
+  // Matrix: put the SESSION into the mode the test is named for, so the server
+  // and the builder are configured the same way. Anything that disagrees fails.
+  let modePassed = 0
+  for (const [name, fn] of modeTests) {
+    const my_ = MYSQL_MODES.find((m) => name.startsWith(`mysql[${m.name}]`))
+    const pg_ = PG_MODES.find((m) => name.startsWith(`pg[${m.name}]`))
+    try {
+      if (my_) await conn.query(`SET SESSION sql_mode='${my_.sqlMode}'`)
+      if (pg_) await client.query(`SET standard_conforming_strings = ${pg_.scs}`)
+      await fn(client, conn)
+      modePassed++
+    } catch (err) {
+      await fail(name, err)
+    } finally {
+      if (my_) await conn.query('SET SESSION sql_mode=DEFAULT')
+      if (pg_) await client.query('SET standard_conforming_strings = on')
+    }
+  }
+  console.log(`✓ ${modePassed}/${modeTests.length} sql_mode matrix tests passed (${MYSQL_MODES.length} MySQL modes × ${PG_MODES.length} pg modes)`)
 
   await client.end()
   await conn.end()
-  console.log(`✓ ${passed}/${tests.length} integration tests passed against real Postgres + MySQL`)
 })().catch((err) => {
   console.error('Integration setup failed:', err && err.message ? err.message : err)
   console.error('\nStart servers with:')

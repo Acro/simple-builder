@@ -76,6 +76,27 @@ The SQL is LEXED, not scanned. A `?` is left alone inside:
 Postgres `?|` and `?&` jsonb operators are recognised and preserved.
 The BARE jsonb `?` operator is ambiguous — escape it as `\?` (or use the tag).
 
+## Non-default server modes (lexing only; the tag is immune)
+
+pg.withMode(opts) / mysql.withMode(opts) -> a NEW builder (original unchanged).
+
+  ansiQuotes: true                  MySQL sql_mode=ANSI_QUOTES ("..." is an identifier)
+  noBackslashEscapes: true          MySQL sql_mode=NO_BACKSLASH_ESCAPES (\ is ordinary)
+  standardConformingStrings: false  Postgres: \ escapes inside '...' (default true)
+
+Only needed when your SQL has a backslash immediately before a quote inside a
+literal. `''` doubling lexes the same in EVERY mode, and the sql tag never lexes.
+Verified against PG 16 + MySQL 8.4 across the full matrix.
+
+## MySQL driver caveat (about mysql2, not this library)
+
+mysql2's `query()` substitutes values CLIENT-side with backslash escaping
+(escape("it's") -> 'it\'s'). Under sql_mode=NO_BACKSLASH_ESCAPES that is wrong:
+it errors, and round-trips `x\` as `x\\`. Use `execute()` (a real server-side
+prepared statement), which is correct in every mode:
+  const q = mysql(['SELECT * FROM t WHERE id = ?', id])
+  const [rows] = await conn.execute(q.text, q.values)
+
 ## Security
 
 - Values are safe: parameterised, never inlined into `text`, in BOTH APIs.

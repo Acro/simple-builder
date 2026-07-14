@@ -242,6 +242,42 @@ Two things the library cannot do for you:
   automatically safe to concatenate into new SQL — parameterise on the way out
   too.
 
+### On MySQL, prefer `execute()` over `query()`
+
+This is about the driver, not this library, but it affects you: `mysql2`'s
+`query()` substitutes values **client-side** using backslash escaping
+(`escape("it's")` → `'it\'s'`). Under `sql_mode=NO_BACKSLASH_ESCAPES` that
+escaping is wrong — we measured it erroring outright and round-tripping `x\` as
+`x\\`. `execute()` uses a real server-side prepared statement and is correct in
+every mode:
+
+```javascript
+const q = mysql(['SELECT * FROM users WHERE id = ?', id])
+const [rows] = await conn.execute(q.text, q.values)   // ← prefer this
+```
+
+## Non-default server modes
+
+Three server settings change how SQL *lexes*, and therefore which `?` is a
+placeholder. If you have changed them, tell the builder:
+
+```javascript
+const my = mysql.withMode({ ansiQuotes: true, noBackslashEscapes: true })
+const pgOld = pg.withMode({ standardConformingStrings: false })
+```
+
+| Setting | Effect |
+|---|---|
+| `ansiQuotes` | MySQL `sql_mode=ANSI_QUOTES`: `"…"` is an identifier, not a string |
+| `noBackslashEscapes` | MySQL `sql_mode=NO_BACKSLASH_ESCAPES`: `\` is ordinary in literals |
+| `standardConformingStrings: false` | Postgres: `\` escapes inside `'…'` |
+
+`withMode` returns a new builder and leaves the original alone. **You only need
+it if your SQL puts a backslash immediately before a quote inside a literal** —
+`''` doubling lexes identically in every mode, and the `sql` tag never lexes at
+all, so both are mode-proof. All of the above is verified against real Postgres
+16 and MySQL 8.4 across the full mode matrix.
+
 ## Requirements & compatibility
 
 - Node.js **>= 16**. Works with the `pg`, `mysql`, and `mysql2` drivers.

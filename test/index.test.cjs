@@ -370,6 +370,67 @@ test('sql.id rejects NUL and non-strings', () => {
   assert.throws(() => pg(sql`SELECT * FROM ${sql.id('')}`), /non-empty string/i)
 })
 
+// ── withMode: non-default server lexing settings ─────────────────────────
+test('withMode: pg standardConformingStrings=false makes \\ escape in \'...\'', () => {
+  const frag = "SELECT 'a\\'b ?' AS s, ? ::int AS n"
+  // Default (scs=on): \ is ordinary, so the string ends at the 2nd quote and
+  // the FIRST ? is the placeholder.
+  assert.deepStrictEqual(pg([frag, 1]), {
+    text: "SELECT 'a\\'b $1' AS s, ? ::int AS n",
+    values: [1],
+  })
+  // scs=off: \' escapes, so the ? inside the string is not a placeholder and
+  // the SECOND ? binds.
+  assert.deepStrictEqual(pg.withMode({ standardConformingStrings: false })([frag, 1]), {
+    text: "SELECT 'a\\'b ?' AS s, $1 ::int AS n",
+    values: [1],
+  })
+})
+
+test('withMode: mysql noBackslashEscapes changes where the string ends', () => {
+  // Default: \' escapes → the string swallows the first ?, so only one value.
+  assert.deepStrictEqual(mysql(["SELECT 'a\\'b ?' AS s, ? AS n", 1]), {
+    text: "SELECT 'a\\'b ?' AS s, ? AS n",
+    values: [1],
+  })
+  // noBackslashEscapes: the string is 'a\' and ends early, so the ? after it is
+  // a placeholder — same count here, but the binding position differs.
+  assert.deepStrictEqual(mysql.withMode({ noBackslashEscapes: true })(["SELECT 'a\\' AS s, ? AS n", 1]), {
+    text: "SELECT 'a\\' AS s, ? AS n",
+    values: [1],
+  })
+})
+
+test('withMode: mysql ansiQuotes treats "..." as an identifier (no \\ escape)', () => {
+  // Under ANSI_QUOTES a "…" identifier is escaped by doubling, and `"a\"b"` is
+  // a syntax error on the server — so only the doubling form is valid SQL.
+  assert.deepStrictEqual(mysql.withMode({ ansiQuotes: true })(['SELECT "a""b" AS s, ? AS n', 1]), {
+    text: 'SELECT "a""b" AS s, ? AS n',
+    values: [1],
+  })
+})
+
+test('withMode: returns a new builder and never mutates the original', () => {
+  const configured = mysql.withMode({ noBackslashEscapes: true })
+  assert.notStrictEqual(configured, mysql)
+  assert.strictEqual(typeof configured.withMode, 'function')
+  // The default builder still lexes with backslash escapes.
+  assert.deepStrictEqual(mysql(["SELECT 'a\\'b ?' AS s, ? AS n", 1]).values, [1])
+  // Modes merge when chained.
+  const both = mysql.withMode({ ansiQuotes: true }).withMode({ noBackslashEscapes: true })
+  assert.deepStrictEqual(both(['SELECT "a""b" AS s, ? AS n', 1]), {
+    text: 'SELECT "a""b" AS s, ? AS n',
+    values: [1],
+  })
+})
+
+test('withMode: the sql tag is unaffected by mode (it never lexes)', () => {
+  const frag = sql`SELECT ${"it's ?"} AS a, ${2} AS n`
+  const expected = { text: 'SELECT ? AS a, ? AS n', values: ["it's ?", 2] }
+  assert.deepStrictEqual(mysql(frag), expected)
+  assert.deepStrictEqual(mysql.withMode({ ansiQuotes: true, noBackslashEscapes: true })(frag), expected)
+})
+
 // ── Markers at a value position ──────────────────────────────────────────
 // The marker classes are objects, so a clause marker before the `?` must not
 // enumerate their internal fields (`parts`/`text`/`nodes`/`value`) as columns.

@@ -39,6 +39,18 @@ assert.deepStrictEqual(pg(["SELECT * FROM t WHERE tags ?| ARRAY['x'] AND id = ?"
 // ── identifier safety ──
 assert.throws(() => pg(['UPDATE t SET ?', { 'x=1; DROP TABLE t; --': 1 }]), /not a valid column name/i)
 
+// ── withMode ──
+assert.strictEqual(typeof mysql.withMode, 'function')
+assert.notStrictEqual(mysql.withMode({ ansiQuotes: true }), mysql)
+assert.deepStrictEqual(mysql.withMode({ ansiQuotes: true })(['SELECT "a""b" AS s, ? AS n', 1]), {
+  text: 'SELECT "a""b" AS s, ? AS n',
+  values: [1],
+})
+assert.deepStrictEqual(
+  pg.withMode({ standardConformingStrings: false })(["SELECT 'a\\'b ?' AS s, ? ::int AS n", 1]),
+  { text: "SELECT 'a\\'b ?' AS s, $1 ::int AS n", values: [1] }
+)
+
 // ── sql tag ──
 assert.deepStrictEqual(pg(sql`SELECT * FROM users WHERE id = ${42}`), {
   text: 'SELECT * FROM users WHERE id = $1',

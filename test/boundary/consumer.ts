@@ -3,7 +3,7 @@
  * package's d.ts with the latest compiler, so a typings change that breaks
  * consumers fails the build.
  */
-import simpleBuilder, { pg, mysql, sql, BuildResult, Row, Sql } from 'simple-builder'
+import simpleBuilder, { pg, mysql, sql, Build, BuildResult, Mode, Row, Sql } from 'simple-builder'
 
 function main(): void {
   // partials API
@@ -21,10 +21,16 @@ function main(): void {
   const g: BuildResult = pg(sql`SELECT * FROM t ORDER BY id ${sql.raw('DESC')}`)
   const h: BuildResult = pg(sql`SELECT * FROM t WHERE tags = ${sql.value([1, 2])}`)
 
+  // withMode
+  const mode: Mode = { ansiQuotes: true, noBackslashEscapes: true }
+  const configured: Build = mysql.withMode(mode)
+  const i: BuildResult = configured(['SELECT ? AS n', 1])
+  const j: BuildResult = pg.withMode({ standardConformingStrings: false })(sql`SELECT ${1}`)
+
   const text: string = a.text
   const values: unknown[] | undefined = a.values
 
-  void [b, c, d, e, f, g, h, text, values]
+  void [b, c, d, e, f, g, h, i, j, text, values]
 }
 
 void main

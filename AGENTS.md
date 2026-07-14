@@ -42,6 +42,10 @@ security model, and gotchas in one file.
    `?|`/`?&`/`??` as operators; honours `\?` as an escaped literal `?`. Only
    what survives all that is a placeholder.
 
+   Lexing settings that differ per server (`Mode`) are threaded in via
+   `withMode`; `makeBuild` closes over them. Defaults match a stock server, so
+   the option is inert unless set.
+
    Every dialect difference here is load-bearing and verified against real
    servers by `test/integration.cjs` — do not "simplify" any of them:
    - Quote runs go through `consumeQuoted`, dialect-aware about backslash
@@ -51,6 +55,25 @@ security model, and gotchas in one file.
    - `--` is a comment in MySQL only when followed by whitespace or EOF
      (`SELECT 1--2` is 3 there); Postgres always treats it as a comment.
    - `#` is a comment in MySQL only; in Postgres it starts `#>` / `#-`.
+   - Under `ANSI_QUOTES`, MySQL `"…"` is an identifier (doubling only), and
+     `"a\"b"` is a *syntax error* on the server — so backslash escaping must be
+     off for `"` in that mode. Under `NO_BACKSLASH_ESCAPES`, `\` is ordinary in
+     every literal.
+
+## Facts measured against real servers (do not "correct" from memory)
+
+MySQL 8.4 / PG 16, recorded because each one contradicts a plausible assumption:
+
+- `''` doubling lexes identically in **every** mode of both engines. It is the
+  only mode-proof escape. The `sql` tag never lexes, so it is mode-proof too.
+- Placeholder-count strictness: **pg rejects both too-few and too-many** params;
+  **MySQL `execute()` rejects too-few but silently ignores extras**. So the
+  server is a full oracle for pg and only a half-oracle for MySQL — integration
+  tests must assert on returned ROWS, not merely that the query ran.
+- mysql2's `query()` escapes values client-side with backslashes, which is wrong
+  under `NO_BACKSLASH_ESCAPES` (errors; round-trips `x\` as `x\\`). The
+  integration suite therefore drives MySQL through `execute()`, which also means
+  MySQL's own parser — not mysql2's scanner — validates our text.
 4. **`classify()`** — positional clause detection from the text immediately
    before each placeholder (`\bVALUES\s+$` etc). `\b` is load-bearing: it keeps
    `OFFSET ?` from reading as `SET ?` and `JOIN ?` from reading as `IN ?`.

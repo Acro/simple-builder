@@ -8,5 +8,6 @@ export {
   Value,
   Row,
   BuildResult,
+  Mode,
   Build,
 } from '../dist/index.js'

@@ -36,6 +36,28 @@ export interface BuildResult {
   values?: unknown[]
 }
 
+/**
+ * Server settings that change how SQL *lexes*, and therefore which `?` is a
+ * placeholder. The defaults match a stock server, so you only need this if you
+ * have changed them. Verified against Postgres 16 and MySQL 8.4.
+ *
+ * Only matters for a backslash immediately before a quote inside a literal —
+ * `''` doubling lexes identically in every mode, and the `sql` tag never lexes
+ * at all, so both are mode-proof.
+ */
+export interface Mode {
+  /** MySQL, `sql_mode=ANSI_QUOTES`: `"…"` delimits an identifier (escaped by
+   *  `""` doubling), not a string with backslash escapes. Default `false`. */
+  ansiQuotes?: boolean
+  /** MySQL, `sql_mode=NO_BACKSLASH_ESCAPES`: `\` is an ordinary character
+   *  inside string literals. Default `false`. */
+  noBackslashEscapes?: boolean
+  /** Postgres, `standard_conforming_strings`: when `false`, `\` escapes inside
+   *  ordinary `'…'` strings (as it always does inside `E'…'`). Default `true`,
+   *  the server default since 9.1. */
+  standardConformingStrings?: boolean
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Identifiers
 //
@@ -174,7 +196,7 @@ const consumeQuoted = (
   return i
 }
 
-const lex = (fragment: string, dialect: Dialect): Piece[] => {
+const lex = (fragment: string, dialect: Dialect, mode: Mode): Piece[] => {
   const pieces: Piece[] = []
   let buf = ''
   const flush = (): void => {
@@ -194,23 +216,30 @@ const lex = (fragment: string, dialect: Dialect): Piece[] => {
       continue
     }
 
-    // Single-quoted string literal. `''` escapes everywhere. Backslash also
-    // escapes in MySQL (unless NO_BACKSLASH_ESCAPES) and in a Postgres E'…'
-    // escape string — but NOT in a standard Postgres string, where
-    // standard_conforming_strings makes backslash an ordinary character.
+    // Single-quoted string literal. `''` escapes in every mode of both engines.
+    // Backslash is mode-dependent:
+    //  - MySQL: escapes, unless sql_mode=NO_BACKSLASH_ESCAPES.
+    //  - Postgres: escapes inside E'…' always; inside a plain '…' only when
+    //    standard_conforming_strings is off (it is on by default since 9.1).
     if (c === "'") {
-      const escapes = dialect === 'mysql' || /(?:^|[^A-Za-z0-9_$])[Ee]$/.test(buf)
+      const escapes =
+        dialect === 'mysql'
+          ? !mode.noBackslashEscapes
+          : /(?:^|[^A-Za-z0-9_$])[Ee]$/.test(buf) || mode.standardConformingStrings === false
       buf += c
       i++
       i = consumeQuoted(fragment, i, "'", escapes, (s) => { buf += s })
       continue
     }
 
-    // Quoted identifier: `...` (MySQL) or "..." (a pg identifier, or a MySQL
-    // string). Either way a `?` inside is not a placeholder. Only MySQL honours
-    // backslash escapes here; pg identifiers use "" doubling alone.
+    // Quoted run: `…` (a MySQL identifier) or "…" — a pg identifier, a MySQL
+    // string, or a MySQL identifier under ANSI_QUOTES. A `?` inside is never a
+    // placeholder in any of those readings; only the backslash rule differs.
+    // Backticks and pg/ANSI_QUOTES identifiers use doubling alone; a MySQL
+    // "…" string honours backslash unless NO_BACKSLASH_ESCAPES.
     if (c === '"' || c === '`') {
-      const escapes = dialect === 'mysql' && c === '"'
+      const escapes =
+        dialect === 'mysql' && c === '"' && !mode.ansiQuotes && !mode.noBackslashEscapes
       buf += c
       i++
       i = consumeQuoted(fragment, i, c, escapes, (s) => { buf += s })
@@ -407,7 +436,7 @@ const renderNodes = (r: Renderer, nodes: readonly Node[]): string => {
 // The `?` partials API
 // ─────────────────────────────────────────────────────────────────────────
 
-const buildPartials = (dialect: Dialect, parts: unknown[]): BuildResult => {
+const buildPartials = (dialect: Dialect, parts: unknown[], mode: Mode): BuildResult => {
   const r = new Renderer(dialect)
   const text: string[] = []
 
@@ -438,7 +467,7 @@ const buildPartials = (dialect: Dialect, parts: unknown[]): BuildResult => {
       )
     }
 
-    const pieces = lex(part, dialect)
+    const pieces = lex(part, dialect, mode)
     const holes = pieces.filter((p) => 'placeholder' in p).length
     const available = parts.length - i - 1
     if (holes > available) {
@@ -565,26 +594,39 @@ export interface Build {
   (fragment: Sql): BuildResult
   (partials: readonly unknown[]): BuildResult
   (...partials: unknown[]): BuildResult
+  /**
+   * A builder for a server whose lexing settings differ from the defaults —
+   * `mysql.withMode({ ansiQuotes: true })`. Returns a new builder; the original
+   * is unchanged. Only affects the `?` partials API (the `sql` tag never lexes).
+   */
+  withMode(mode: Mode): Build
 }
 
-const build = (dialect: Dialect, args: unknown[]): BuildResult => {
+const build = (dialect: Dialect, args: unknown[], mode: Mode): BuildResult => {
   if (args.length === 1) {
     const only = args[0]
     if (only instanceof Sql) return buildSql(dialect, only)
-    if (Array.isArray(only)) return buildPartials(dialect, only.slice())
+    if (Array.isArray(only)) return buildPartials(dialect, only.slice(), mode)
     if (!isMarker(only)) {
       // A single ready string (or nothing) — nothing to bind.
       return { text: only == null ? '' : String(only) }
     }
   }
-  return buildPartials(dialect, args)
+  return buildPartials(dialect, args, mode)
+}
+
+const makeBuild = (dialect: Dialect, mode: Mode): Build => {
+  const builder = ((...args: unknown[]) => build(dialect, args, mode)) as Build
+  builder.withMode = (extra: Mode): Build =>
+    makeBuild(dialect, Object.assign({}, mode, extra))
+  return builder
 }
 
 /** Postgres (`pg`) builder — renders `$1, $2, …` placeholders. */
-export const pg: Build = (...args: unknown[]) => build('pg', args)
+export const pg: Build = makeBuild('pg', {})
 
 /** MySQL (`mysql` / `mysql2`) builder — keeps `?` placeholders. */
-export const mysql: Build = (...args: unknown[]) => build('mysql', args)
+export const mysql: Build = makeBuild('mysql', {})
 
 /** Default export: `{ pg, mysql, sql }`, mirroring the classic
  *  `require('simple-builder')` shape. */
