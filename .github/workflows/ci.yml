@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [16.x, 18.x, 20.x, 22.x, 24.x]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm install
+      - run: npm test
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - run: npm install
+      - name: Differential fuzz vs the 2.4.2 oracle (10000 scenarios)
+        run: npm run fuzz -- 10000
+
+  package-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - run: npm install
+      - name: Pack tarball
+        run: |
+          npm pack --pack-destination /tmp
+          echo "TARBALL=$(ls /tmp/simple-builder-*.tgz)" >> "$GITHUB_ENV"
+      - name: Install into a fresh consumer and run the smoke tests (CJS + ESM)
+        run: |
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          npm init -y > /dev/null
+          npm install "$TARBALL"
+          cp "$GITHUB_WORKSPACE/test/boundary/smoke.cjs" "$GITHUB_WORKSPACE/test/boundary/smoke.mjs" .
+          node --unhandled-rejections=strict smoke.cjs
+          node --unhandled-rejections=strict smoke.mjs
+      - name: Typings gate — latest TypeScript compiles the installed d.ts
+        run: |
+          cd /tmp/consumer
+          cp "$GITHUB_WORKSPACE/test/boundary/consumer.ts" .
+          npm install --no-save typescript@latest
+          ./node_modules/.bin/tsc --noEmit --strict --target es2017 --lib es2017 --module node16 --moduleResolution node16 consumer.ts

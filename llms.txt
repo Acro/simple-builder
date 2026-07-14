@@ -1,0 +1,63 @@
+# simple-builder
+
+> Tiny SQL string builder that keeps your SQL visible. Write SQL with `?`
+> placeholders, interleave values, get `{ text, values }` for the pg, mysql and
+> mysql2 drivers. Object/array expansion for INSERT/UPDATE/WHERE/IN.
+> Zero dependencies. CJS + ESM. Node >= 16. First-class TypeScript types.
+
+## Install
+
+npm install simple-builder
+
+## Import (both work everywhere)
+
+CJS:  const { pg, mysql } = require('simple-builder')
+      const simpleBuilder = require('simple-builder').default   // { pg, mysql }
+ESM:  import { pg, mysql } from 'simple-builder'
+      import simpleBuilder from 'simple-builder'                // { pg, mysql }
+
+## API
+
+pg(partials): { text, values? }       // renders $1, $2, … placeholders
+mysql(partials): { text, values? }    // keeps ? placeholders (also mysql2)
+
+`partials` is one of:
+  - an array of fragments/values:  pg(['... ?', value])
+  - an argument list:              pg('... ?', value)
+  - a single ready SQL string:     pg('SELECT * FROM t')  -> { text }
+
+Result: always has `text`; `values` is present only when >= 1 value was bound.
+
+## Rules
+
+- For each SQL string fragment, its `?` count determines how many of the
+  following partials are consumed as bound values.
+- A bare array in fragment position is a projection list: ['id','name'] -> "id,name".
+- pg rewrites `?` to `$1,$2,…`; mysql leaves `?`. That is the only dialect diff.
+- Objects/arrays expand when the fragment ends with a marker:
+    "... VALUES ?" + object  -> "(k1,k2) VALUES ($1,$2)"     (INSERT)
+    "... SET ?"    + object  -> "SET k1=$1,k2=$2"            (UPDATE)
+    "... WHERE ?"  + object  -> "WHERE k1=$1 AND k2=$2"      (equality, AND-joined)
+    "... IN ?"     + array   -> "IN ($1,$2,$3)"
+- Markers are case-insensitive (`in ?`, `IN ?`, `values ?` all work).
+- Values (including Date, null, false, bigint) are always parameterised.
+
+## Security
+
+- Values are safe: parameterised, never inlined into `text`.
+- Object KEYS become column identifiers, interpolated verbatim into the SQL.
+  Never pass user-controlled keys to VALUES ?/SET ?/WHERE ? — choose the columns
+  yourself and let the user control only the values.
+
+## Errors
+
+- A value with no preceding `?` fragment throws "expected an SQL string...".
+- An empty object passed to VALUES ?/SET ?/WHERE ? throws "empty object...".
+
+## 3.0.0 notes (vs 2.4.2)
+
+- Same public API and output for all documented usage (verified by a differential
+  fuzzer against 2.4.2).
+- Now ships TypeScript types + ESM alongside CJS; `main` is `dist/index.js`.
+- Fixes: lowercase `in ?` now expands; the caller's partials array is no longer
+  mutated; empty expansion objects now throw instead of emitting invalid SQL.

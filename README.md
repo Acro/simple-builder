@@ -1,221 +1,140 @@
 # simple-builder
 
-### Simple SQL query string builder
+A tiny SQL string builder that keeps your SQL **visible**. You write SQL with
+`?` placeholders, interleave the values, and get back `{ text, values }` ready
+for the `pg`, `mysql`, and `mysql2` drivers.
 
-## Installation
+Zero dependencies. First-class TypeScript types. Ships CJS **and** ESM.
 
-```javascript
+```bash
 npm install simple-builder --save
 ```
 
-## Motivation
+## Why
 
-SQL query builders (such as `squel.js`) often feel heavy. It is not easy to create your SQL query without reading the documentation.
+Most query builders hide your SQL behind a fluent API you have to learn.
+`simple-builder` does the opposite — you write real SQL and it only handles the
+tedious parts: numbering placeholders and expanding objects/arrays.
 
-The aim of `simple-builder` is
+- Doesn't obscure the actual SQL.
+- Uses the SQL you already know.
+- Queries stay easy to read and easy to follow.
 
-- to NOT obscure the actual SQL code
-- to make use of your existing SQL knowledge
-- to make queries easy-to-read and easy-to-follow
-- to eliminate annoyances of different client libraries
-
-## API
-
-### `build(Array partials)` -> `Object`
-### `build(Arguments partials)` -> `Object`
-
-The `partials` can be either an `Array` or plain function `arguments` consisting of:
-
-- strings
-- numbers
-- arrays
-- boolean values
-- objects
-
-All of them are partial values for constructing query `Object`.
+## Quick start
 
 ```javascript
-var email = "john@doe.wtf"
-var partials = [ "SELECT * FROM users WHERE email = ?", email ]
+const { pg } = require('simple-builder')      // or: const { mysql } = ...
+
+const email = 'john@doe.wtf'
+const query = pg(['SELECT * FROM users WHERE email = ?', email])
+// { text: 'SELECT * FROM users WHERE email = $1', values: ['john@doe.wtf'] }
+
+const rows = await db.query(query.text, query.values)
 ```
 
-Every query is constructed by creating a `partials` array and passing it to the `simple-builder`.
+ESM works too:
 
 ```javascript
-var build = require("simple-builder").pg
-
-var query = build(partials)
-// { text: "SELECT * FROM users WHERE email = $1", values: [ "john@doe.wtf" ] }
+import { pg, mysql } from 'simple-builder'
 ```
 
-The output of `simple-builder` is always an `Object` containing:
+`pg` renders `$1, $2, …` placeholders; `mysql` (and `mysql2`) keep `?`. That is
+the only difference between the two.
 
-- `text` property
-- `values` property
+## The `partials` list
 
-The `values` property may not be set when there was no variable in your `partials` array.
+A query is a list mixing SQL fragments and values. Pass an array, an argument
+list, or a single ready string:
 
 ```javascript
-var rows = yield db.query(query.text, query.values)
+pg(['SELECT * FROM users WHERE id = ?', userId])   // array
+pg('SELECT * FROM users WHERE id = ?', userId)     // arguments
+pg('SELECT * FROM users')                          // ready string → { text }
 ```
 
-## Syntax
-
-The `partials` array is a mix of SQL code and variables that are to be inserted into the final query.
-
-For variable insertion, the `question mark syntax` is used.
+For each SQL fragment the `?` are counted, and that many values are expected to
+follow it:
 
 ```javascript
-var user_id = 1
-var partials = [ "SELECT * FROM users WHERE id = ?", user_id ]
-```
-
-For every SQL string in your `partials` array the number of `question marks` is retrieved. Matching number of variables is then expected right after this SQL string.
-
-```javascript
-var user_id = 1
-var email = "john@doe.wtf"
-var partials = [ "SELECT * FROM users WHERE id = ? AND email = ?", user_id, email ]
-```
-
-You are basically mixing SQL code and variables.
-
-```javascript
-var user_id = 1
-var partials = [ 
-  "SELECT * FROM friends WHERE friend_id = ?", user_id,
-  "ORDER BY created_at"
-]
-
-var query = build(partials)
-// { text: "SELECT * FROM friends WHERE friend_id = $1 ORDER BY created_at", values: [ 1 ] }
-```
-
-### `INSERT` query
-
-Some query builders are making `INSERT` queries easy to write by using insertion object.
-
-```javascript
-var insertion = {
-  username: "John Doe",
-  email: "john@doe.wtf"
-}
-```
-
-The keys of the `insertion` object represent database columns.
-
-```javascript
-var partials = [ "INSERT INTO users VALUES ?", insertion ]
-```
-
-The example above is the supported syntax for inserting an object.
-
-```javascript
-var partials = [ "INSERT INTO users VALUES ?", insertion, "RETURNING id" ]
-```
-
-When `VALUES ?` substring is found in the SQL partial, the next value is expected to be an `Object`.
-
-```javascript
-var query = build(partials)
-// { text: "INSERT INTO users (username,email) VALUES ($1,$2) RETURNING id", values: [ "John Doe", "john@doe.wtf" ] }
-```
-
-The `INSERT` queries can still be written by hand.
-
-```javascript
-var partials = [ 
-  "INSERT INTO users (username, email)",
-  "VALUES (?, ?)", insertion.username, insertion.email, 
-  "RETURNING id" 
-]
-```
-
-### `UPDATE` query
-
-In a similar manner as the `INSERT`, `UPDATE` queries can also be written using update objects.
-
-```javascript
-var update = {
-  username: "Biggie Smalls",
-  gender: "female"
-}
-```
-
-The keys of the update object represent database columns.
-
-```javascript
-var current_username = "John Doe"
-var partials = [ "UPDATE users SET ?", update, "WHERE username = ?", current_username ]
-```
-
-The example above is the supported syntax for updating with an object.
-
-```javascript
-var query = build(partials)
-// { text: "UPDATE users SET username=$1,gender=$2 WHERE username=$3", values: [ "Biggie Smalls", "female", "John Doe" ] }
-```
-
-The `UPDATE` queries can still be written by hand.
-
-```javascript
-var partials = [ 
-  "UPDATE users",
-  "SET username = ?, gender = ?", update.username, update.gender
-  "WHERE username = ?", current_username
-]
-```
-
-## Examples
-
-```javascript
-var build = require("simple-builder").mysql
-
-// SELECT query
-var query = build([
-  "SELECT * FROM users",
-  "WHERE id = ? AND username = ?", user_id, username
+pg([
+  'SELECT * FROM friends WHERE friend_id = ?', userId,
+  'ORDER BY created_at',
 ])
-
-// { text: "SELECT * FROM users WHERE id = ? AND username = ?", values: [ 1, "John Doe" ] }
-
-var rows = yield db.query(query.text, query.values)
-
-var build = require("simple-builder").pg
-
-// UPDATE query
-var query = build([
-  "UPDATE users SET ?", { username: "something", gender: "male" },
-  "WHERE user_id = ? AND is_hidden = ?", user_id, false
-])
-
-// { "text": "UPDATE users SET username=$1,gender=$2 WHERE user_id = $3 AND is_hidden = $4", "values": [ "something", "male", 123, false ] }
-
-var rows = yield db.query(query.text, query.values)
-
-// INSERT query
-var query = build([
-  "INSERT INTO", "users",
-  "VALUES ?", { username: "something", gender: "male" }
-])
-
-// { "text": "INSERT INTO users (username,gender) VALUES ($1,$2)", "values": [ "something", "male" ] }
-
-var rows = yield db.query(query.text, query.values)
+// { text: 'SELECT * FROM friends WHERE friend_id = $1 ORDER BY created_at', values: [1] }
 ```
 
-## Dependencies
-
-This library has no dependencies.
-
-## Limitations
-
-The output is only suitable for `mysql`, `mysql2` and `pg` drivers.
+A bare array in fragment position becomes a comma-separated projection list:
 
 ```javascript
-var build = require("simple-builder").pg
-var build = require("simple-builder").mysql
+pg(['SELECT', ['id', 'username'], 'FROM users'])
+// { text: 'SELECT id,username FROM users' }
 ```
+
+The result always has a `text` property; `values` is present only when the query
+bound at least one value.
+
+## Object & array expansion
+
+### `INSERT … VALUES ?`
+
+```javascript
+const user = { username: 'John Doe', email: 'john@doe.wtf' }
+pg(['INSERT INTO users VALUES ?', user, 'RETURNING id'])
+// { text: 'INSERT INTO users (username,email) VALUES ($1,$2) RETURNING id',
+//   values: ['John Doe', 'john@doe.wtf'] }
+```
+
+### `UPDATE … SET ?`
+
+```javascript
+pg(['UPDATE users SET ?', { username: 'Biggie', gender: 'female' }, 'WHERE id = ?', id])
+// { text: 'UPDATE users SET username=$1,gender=$2 WHERE id = $3',
+//   values: ['Biggie', 'female', 123] }
+```
+
+### `WHERE ?` (AND-joined equality)
+
+```javascript
+pg(['SELECT * FROM users WHERE ?', { username: 'x', gender: 'male' }])
+// { text: 'SELECT * FROM users WHERE username=$1 AND gender=$2', values: ['x', 'male'] }
+```
+
+### `WHERE … IN ?`
+
+```javascript
+pg('SELECT * FROM users WHERE id IN ?', [1, 2, 3])
+// { text: 'SELECT * FROM users WHERE id IN ($1,$2,$3)', values: [1, 2, 3] }
+```
+
+You can always write these by hand instead — the object forms are just sugar.
+
+## Security
+
+**Values are always parameterised** — they go into the `values` array and are
+never interpolated into the SQL text, so they cannot cause injection.
+
+**Object keys become identifiers and are interpolated verbatim.** In the
+`VALUES ?`, `SET ?`, and `WHERE ?` forms the object's *keys* become column
+names written directly into the SQL. Never build those keys from user input:
+
+```javascript
+// DANGER: keys come straight from the request body
+pg(['UPDATE users SET ?', req.body])   // an attacker controls the column list
+
+// Safe: you decide the columns; the user only controls values
+pg(['UPDATE users SET ?', { username: req.body.username, email: req.body.email }])
+```
+
+## Requirements & compatibility
+
+- Node.js **>= 16**. Works with the `pg`, `mysql`, and `mysql2` drivers.
+- The public API (`pg` / `mysql`, same call shapes and output) is unchanged from
+  2.x — see [CHANGELOG / release notes](https://github.com/Acro/simple-builder/releases)
+  for the 3.0.0 packaging changes and bug fixes.
+
+## Contributing
+
+See [`AGENTS.md`](./AGENTS.md) for the repo layout, build, and test commands.
 
 ## License
 

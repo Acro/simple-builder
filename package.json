@@ -1,25 +1,71 @@
 {
   "name": "simple-builder",
-  "version": "2.4.2",
-  "description": "Simple SQL query string builder",
-  "main": "lib/builder.js",
-  "scripts": {
-    "test": "node test/build_query.js"
+  "version": "3.0.0",
+  "description": "Tiny SQL string builder that keeps your SQL visible. Write SQL with ? placeholders, interleave values, get { text, values } for pg, mysql and mysql2. Object expansion for INSERT/UPDATE/WHERE/IN. Zero dependencies, first-class TypeScript types, CJS + ESM.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./esm/index.d.mts",
+        "default": "./esm/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
   },
-  "author": "Ondrej Machek <acrocz@gmail.com>",
-  "license": "MIT",
-  "dependencies": {},
+  "files": [
+    "dist",
+    "esm",
+    "llms.txt"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "prepare": "tsc",
+    "test": "tsc && tsc --noEmit --strict --target es2017 --lib es2017 --moduleResolution node test/types.test.ts && node --unhandled-rejections=strict test/index.test.cjs",
+    "fuzz": "tsc && node test/fuzz.cjs"
+  },
   "keywords": [
     "sql",
     "query",
     "builder",
-    "query builder",
+    "query-builder",
+    "sql-builder",
     "mysql",
+    "mysql2",
     "postgresql",
-    "postgres"
+    "postgres",
+    "pg",
+    "parameterized",
+    "placeholders",
+    "insert",
+    "update",
+    "where-in",
+    "typescript",
+    "zero-dependency",
+    "esm",
+    "cjs"
   ],
+  "author": "Ondrej Machek, acrocz@gmail.com",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16"
+  },
   "repository": {
     "type": "git",
-    "url": "git://github.com/Acro/simple-builder"
+    "url": "git+https://github.com/Acro/simple-builder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Acro/simple-builder/issues"
+  },
+  "homepage": "https://github.com/Acro/simple-builder#readme",
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.4.0"
   }
 }
