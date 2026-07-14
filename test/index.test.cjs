@@ -275,6 +275,23 @@ test('LEXER: ? inside dollar-quoted strings (anonymous and tagged) is not a plac
   })
 })
 
+test('LEXER: mysql # line comments are skipped; pg # starts an operator', () => {
+  // MySQL: `#` runs to end of line, so the ? inside it is not a placeholder.
+  assert.deepStrictEqual(
+    mysql('SELECT * FROM t WHERE id = ? # note ? here\nAND active = ?', 1, true),
+    { text: 'SELECT * FROM t WHERE id = ? # note ? here\nAND active = ?', values: [1, true] }
+  )
+  // Postgres has no # comment — #> and #- are jsonb operators and must survive.
+  assert.deepStrictEqual(pg(["SELECT data #> '{a}' FROM t WHERE id = ?", 1]), {
+    text: "SELECT data #> '{a}' FROM t WHERE id = $1",
+    values: [1],
+  })
+  assert.deepStrictEqual(pg(["SELECT data #- '{a}' FROM t WHERE id = ?", 1]), {
+    text: "SELECT data #- '{a}' FROM t WHERE id = $1",
+    values: [1],
+  })
+})
+
 test('LEXER: :: casts and $n text are left alone', () => {
   assert.deepStrictEqual(pg(['SELECT id::text FROM t WHERE id = ?', 1]), {
     text: 'SELECT id::text FROM t WHERE id = $1',
@@ -329,6 +346,52 @@ test('sql.id joins parts with a dot for schema qualification', () => {
 test('sql.id rejects NUL and non-strings', () => {
   assert.throws(() => pg(sql`SELECT * FROM ${sql.id('a\0b')}`), /NUL/i)
   assert.throws(() => pg(sql`SELECT * FROM ${sql.id('')}`), /non-empty string/i)
+})
+
+// ── Markers at a value position ──────────────────────────────────────────
+// The marker classes are objects, so a clause marker before the `?` must not
+// enumerate their internal fields (`parts`/`text`/`nodes`/`value`) as columns.
+test('MARKERS: sql.id at a clause-marker value position splices, never expands', () => {
+  assert.deepStrictEqual(pg(['SELECT * FROM t WHERE ?', sql.id('foo')]), {
+    text: 'SELECT * FROM t WHERE "foo"',
+  })
+  assert.deepStrictEqual(pg(['INSERT INTO t VALUES ?', sql.id('foo')]), {
+    text: 'INSERT INTO t VALUES "foo"',
+  })
+  assert.deepStrictEqual(pg(['UPDATE t SET ?', sql.id('foo')]), {
+    text: 'UPDATE t SET "foo"',
+  })
+  assert.deepStrictEqual(pg(['SELECT * FROM t WHERE id IN ?', sql.id('foo')]), {
+    text: 'SELECT * FROM t WHERE id IN "foo"',
+  })
+})
+
+test('MARKERS: sql.raw / sql.value at a clause-marker value position', () => {
+  assert.deepStrictEqual(pg(['UPDATE t SET ?', sql.raw('a=1')]), { text: 'UPDATE t SET a=1' })
+  assert.deepStrictEqual(pg(['SELECT * FROM t WHERE id IN ?', sql.value([1, 2])]), {
+    text: 'SELECT * FROM t WHERE id IN $1',
+    values: [[1, 2]],
+  })
+})
+
+test('MARKERS: an sql`` fragment at a value position splices with continuous numbering', () => {
+  assert.deepStrictEqual(pg(['SELECT * FROM t WHERE ?', sql`a = ${1}`]), {
+    text: 'SELECT * FROM t WHERE a = $1',
+    values: [1],
+  })
+  // Also without a clause marker, and with numbering continuing across it.
+  assert.deepStrictEqual(pg(['SELECT * FROM t WHERE x = ?', 9, 'AND ?', sql`a = ${1}`, 'AND b = ?', 2]), {
+    text: 'SELECT * FROM t WHERE x = $1 AND a = $2 AND b = $3',
+    values: [9, 1, 2],
+  })
+})
+
+test('MARKERS: a plain object still expands at a clause marker', () => {
+  // The reordering must not break the ordinary Row path.
+  assert.deepStrictEqual(pg(['SELECT * FROM t WHERE ?', { a: 1, b: 2 }]), {
+    text: 'SELECT * FROM t WHERE a=$1 AND b=$2',
+    values: [1, 2],
+  })
 })
 
 // ── The sql tagged-template API ──────────────────────────────────────────

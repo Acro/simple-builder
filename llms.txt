@@ -54,7 +54,10 @@ sql.empty                    // renders to nothing (useful for conditionals)
     "... SET ?"    + object  -> "SET k1=$1,k2=$2"            (UPDATE)
     "... WHERE ?"  + object  -> "WHERE k1=$1 AND k2=$2"      (equality, AND-joined)
     "... IN ?"     + array   -> "IN ($1,$2,$3)"
-- sql.id() may be used in fragment position: pg(['SELECT * FROM', sql.id(t), 'WHERE id = ?', 1])
+- Markers work in BOTH fragment and value position and always splice, never expand:
+    pg(['SELECT * FROM', sql.id(t), 'WHERE id = ?', 1])      // fragment position
+    pg(['SELECT * FROM t WHERE ?', sql`a = ${1}`])           // value position
+  An sql`` fragment spliced at a value position keeps placeholder numbering continuous.
 - Values (Date, null, false, bigint) are always parameterised.
 
 ## Lexing: `?` that is not a placeholder
@@ -64,7 +67,8 @@ The SQL is LEXED, not scanned. A `?` is left alone inside:
     escapes only in MySQL and in a Postgres E'a\'b ?' escape string (a standard
     pg string treats \ as an ordinary char — standard_conforming_strings).
   - quoted identifiers ("a?b" and `a?b`); MySQL "..." also honours \ escapes
-  - line comments (-- ?) and block comments (/* ? */, nested)
+  - line comments (-- ?), MySQL # comments (# ?), block comments (/* ? */, nested)
+    NOTE: # is a comment in MySQL only — in pg it starts #> / #- jsonb operators.
   - dollar-quoted bodies ($$a ? b$$, $tag$a ? b$tag$)
 Postgres `?|` and `?&` jsonb operators are recognised and preserved.
 The BARE jsonb `?` operator is ambiguous — escape it as `\?` (or use the tag).

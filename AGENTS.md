@@ -75,6 +75,12 @@ add an export, update `esm/index.mjs` AND `esm/index.d.mts`.
   Value poison and identifier poison are kept DISJOINT, and placeholder counting
   strips quoted identifiers **dialect-aware** (backticks are not quotes in pg) —
   both are checker correctness requirements, not cosmetics.
+- **Marker** — routes the marker classes through `buildPartials` (the tag fuzzer
+  never does), asserting that a marker's internal field names (`parts`, `nodes`,
+  `value`, `text`) never surface as SQL identifiers. This guards a real bug:
+  markers are objects, so a clause marker before the `?` used to enumerate them
+  as a Row and emit `WHERE parts=$1`. Verify changes here by reintroducing that
+  bug and confirming the fuzzer fails.
 
 ## Intentional 2.4.2 → 3.0.0 behaviour changes
 

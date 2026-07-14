@@ -217,8 +217,9 @@ const lex = (fragment: string, dialect: Dialect): Piece[] => {
       continue
     }
 
-    // Line comment.
-    if (c === '-' && fragment[i + 1] === '-') {
+    // Line comment. MySQL additionally treats `#` as one; Postgres does NOT —
+    // there `#` starts operators like `#>` / `#-`, so this must stay gated.
+    if ((c === '-' && fragment[i + 1] === '-') || (dialect === 'mysql' && c === '#')) {
       while (i < n && fragment[i] !== '\n') { buf += fragment[i]; i++ }
       continue
     }
@@ -304,8 +305,18 @@ const classify = (before: string): Clause =>
   RE_IN.test(before) ? 'where_in' :
   null
 
+/** One of the library's own fragment markers — never a plain data Row. */
+const isMarker = (value: unknown): boolean =>
+  value instanceof Sql ||
+  value instanceof Identifier ||
+  value instanceof Raw ||
+  value instanceof Single
+
+/** A plain object whose keys are column names. Deliberately excludes Date and
+ *  the marker classes: enumerating those would turn their internal fields
+ *  (`parts`, `text`, `nodes`, `value`) into fabricated column names. */
 const isObject = (value: unknown): value is Row =>
-  value !== null && typeof value === 'object' && !(value instanceof Date)
+  value !== null && typeof value === 'object' && !(value instanceof Date) && !isMarker(value)
 
 const describe = (value: unknown): string =>
   value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
@@ -371,6 +382,19 @@ class Renderer {
   }
 }
 
+/** Render fragment nodes through a renderer, so placeholder numbering and the
+ *  values array stay continuous whether the fragment is the whole query or is
+ *  spliced into a `?` partials list. */
+const renderNodes = (r: Renderer, nodes: readonly Node[]): string => {
+  let text = ''
+  for (const node of nodes) {
+    if (node.k === 'text') text += node.v
+    else if (node.k === 'id') text += r.id(node.v)
+    else text += r.bind(node.v)
+  }
+  return text
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // The `?` partials API
 // ─────────────────────────────────────────────────────────────────────────
@@ -424,14 +448,22 @@ const buildPartials = (dialect: Dialect, parts: unknown[]): BuildResult => {
       const value = parts[i + 1 + k]
       k++
       const clause = classify(out)
-      if (clause && isObject(value)) {
-        out = r.expand(out, clause, value as Row)
+
+      // Markers are checked BEFORE the clause expansion: they are objects, so
+      // `WHERE ?` + sql.id(…) would otherwise enumerate the marker's own fields
+      // as column names and emit `WHERE parts=$1`.
+      if (value instanceof Sql) {
+        out += renderNodes(r, value.nodes)
       } else if (value instanceof Identifier) {
         out += r.id(value.parts)
       } else if (value instanceof Raw) {
         out += value.text
+      } else if (value instanceof Single) {
+        out += r.bind(value.value)
+      } else if (clause && isObject(value)) {
+        out = r.expand(out, clause, value)
       } else {
-        out += r.bind(value instanceof Single ? value.value : value)
+        out += r.bind(value)
       }
     }
 
@@ -512,13 +544,7 @@ export const sql: SqlTag = Object.assign(tag, {
 
 const buildSql = (dialect: Dialect, fragment: Sql): BuildResult => {
   const r = new Renderer(dialect)
-  let text = ''
-  for (const node of fragment.nodes) {
-    if (node.k === 'text') text += node.v
-    else if (node.k === 'id') text += r.id(node.v)
-    else text += r.bind(node.v)
-  }
-  return r.result(text)
+  return r.result(renderNodes(r, fragment.nodes))
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -538,7 +564,7 @@ const build = (dialect: Dialect, args: unknown[]): BuildResult => {
     const only = args[0]
     if (only instanceof Sql) return buildSql(dialect, only)
     if (Array.isArray(only)) return buildPartials(dialect, only.slice())
-    if (!(only instanceof Identifier) && !(only instanceof Raw)) {
+    if (!isMarker(only)) {
       // A single ready string (or nothing) — nothing to bind.
       return { text: only == null ? '' : String(only) }
     }

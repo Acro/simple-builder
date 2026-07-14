@@ -282,3 +282,107 @@ for (let iter = 0; iter < ITERATIONS; iter++) {
 }
 
 console.log(`✓ property fuzz: ${propChecked} sql-tag scenarios hold all invariants`)
+
+// ─────────────────────────────────────────────────────────────────────────
+// Property fuzz — markers through the PARTIALS API.
+//
+// The marker classes (Sql/Identifier/Raw/Single) are plain objects, so a clause
+// marker before a `?` used to enumerate their internal fields as column names
+// (`WHERE ?` + sql.id(x) → `WHERE parts=$1`). The tag fuzzer above could not see
+// that: it never routes a marker through `buildPartials`. This does.
+//
+//   1. a marker's internal field names never surface as SQL identifiers
+//   2. bound values never appear in the text
+//   3. pg renders exactly $1..$n, in order
+// ─────────────────────────────────────────────────────────────────────────
+
+// Every own-property name of the marker classes. If any of these is ever
+// emitted as a column, a marker got enumerated as a Row.
+const MARKER_FIELDS = ['parts', 'nodes', 'value', 'text']
+
+// Clause markers are what triggered the bug, so bias hard toward them.
+const CLAUSES = [
+  'SELECT * FROM t WHERE ?',
+  'INSERT INTO t VALUES ?',
+  'UPDATE t SET ?',
+  'SELECT * FROM t WHERE id IN ?',
+  'SELECT ?',
+  'SELECT * FROM t WHERE a = ? AND b = ?',
+]
+
+let markerChecked = 0
+for (let iter = 0; iter < ITERATIONS; iter++) {
+  const seed = (BASE_SEED + 0x7f4a7c15 + iter) >>> 0
+  const rand = prng(seed)
+
+  const fragment = pick(rand, CLAUSES)
+  const holes = (fragment.match(/\?/g) || []).length
+  const expected = []
+
+  const partials = [fragment]
+  for (let h = 0; h < holes; h++) {
+    const roll = rand()
+    if (roll < 0.2) {
+      partials.push(sql.id(randIdPoison(rand)))          // splices, binds nothing
+    } else if (roll < 0.35) {
+      partials.push(sql.raw('a=1'))                      // splices, binds nothing
+    } else if (roll < 0.5) {
+      const v = randPoison(rand)
+      expected.push([v])
+      partials.push(sql.value([v]))                      // one bound value
+    } else if (roll < 0.65) {
+      const v = randPoison(rand)
+      expected.push(v)
+      partials.push(sql`a = ${v}`)                       // splices, binds one
+    } else if (roll < 0.8) {
+      const v = randPoison(rand)
+      expected.push(v)
+      partials.push({ col_a: v })                        // a genuine Row expansion
+    } else {
+      const v = randPoison(rand)
+      expected.push(v)
+      partials.push(v)                                   // a plain scalar
+    }
+  }
+
+  let out
+  try {
+    out = pg(partials)
+  } catch (err) {
+    // A Row expansion under `SELECT ?` / `a = ?` has no clause marker, so the
+    // object binds as a value — never an error. Anything thrown is real.
+    console.error(`\nMARKER FUZZ ERROR at seed ${seed}:`)
+    console.error('  partials:', partials.map((p) => (typeof p === 'string' ? p : p.constructor.name)).join(' | '))
+    throw err
+  }
+
+  try {
+    // 1. no marker internal ever becomes a column name.
+    for (const field of MARKER_FIELDS) {
+      assert.ok(
+        !new RegExp(`(?:^|[\\s(,])${field}=\\$\\d`).test(out.text),
+        `marker field "${field}" surfaced as a column: ${out.text}`
+      )
+    }
+
+    // 2. values never reach the text.
+    for (const v of expected) {
+      if (typeof v === 'string' && v.length > 3) {
+        assert.ok(stripQuoted(out.text, 'pg').indexOf(v) === -1, `value leaked into text: ${v}`)
+      }
+    }
+
+    // 3. pg renders $1..$n in order.
+    const ph = pgPlaceholders(out.text)
+    assert.strictEqual(ph.length, (out.values || []).length, 'pg placeholder count')
+    ph.forEach((h, idx) => assert.strictEqual(h, '$' + (idx + 1), 'pg placeholder order'))
+  } catch (err) {
+    console.error(`\nMARKER PROPERTY FAILURE at seed ${seed}:`)
+    console.error('  result:', JSON.stringify(out))
+    console.error('  expect:', JSON.stringify(expected))
+    throw err
+  }
+  markerChecked++
+}
+
+console.log(`✓ marker fuzz: ${markerChecked} partials-API scenarios hold all invariants`)
