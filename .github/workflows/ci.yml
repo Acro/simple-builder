@@ -39,6 +39,11 @@ jobs:
         with:
           node-version: 22.x
       - run: npm install
+      - name: Lint the published package surface (publint + are-the-types-wrong)
+        run: |
+          npm run build
+          npx --yes publint@latest --strict
+          npx --yes @arethetypeswrong/cli@latest --pack . --ignore-rules cjs-resolves-to-esm
       - name: Pack tarball
         run: |
           npm pack --pack-destination /tmp

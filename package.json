@@ -2,6 +2,7 @@
   "name": "simple-builder",
   "version": "3.0.0",
   "description": "Tiny SQL string builder that keeps your SQL visible. Write SQL with ? placeholders, interleave values, get { text, values } for pg, mysql and mysql2. Object expansion for INSERT/UPDATE/WHERE/IN. Zero dependencies, first-class TypeScript types, CJS + ESM.",
+  "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
