@@ -275,6 +275,28 @@ test('LEXER: ? inside dollar-quoted strings (anonymous and tagged) is not a plac
   })
 })
 
+test('LEXER: mysql `--` is only a comment when followed by whitespace', () => {
+  // Verified against MySQL 8.4: `SELECT 1--2` is 3 (two minus signs), and
+  // `SELECT 1--?` really does bind — so `--` must NOT swallow the placeholder.
+  assert.deepStrictEqual(mysql(['SELECT 1--? AS v', 2]), {
+    text: 'SELECT 1--? AS v',
+    values: [2],
+  })
+  // With whitespace it IS a comment, so the ? inside is not a placeholder.
+  assert.deepStrictEqual(mysql(['SELECT ? AS n -- note ? here\n', 1]), {
+    text: 'SELECT ? AS n -- note ? here\n',
+    values: [1],
+  })
+  // A bare `--` at end of input is a comment.
+  assert.deepStrictEqual(mysql(['SELECT ? AS n --', 1]), { text: 'SELECT ? AS n --', values: [1] })
+  // Postgres always treats `--` as a comment, no whitespace required — so here
+  // the first ? is commented out and only the one on the next line binds.
+  assert.deepStrictEqual(pg(['SELECT 1--? AS v\n, ? ::int AS n', 2]), {
+    text: 'SELECT 1--? AS v\n, $1 ::int AS n',
+    values: [2],
+  })
+})
+
 test('LEXER: mysql # line comments are skipped; pg # starts an operator', () => {
   // MySQL: `#` runs to end of line, so the ? inside it is not a placeholder.
   assert.deepStrictEqual(

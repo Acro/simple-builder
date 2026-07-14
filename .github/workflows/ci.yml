@@ -31,6 +31,47 @@ jobs:
       - name: Fuzz — differential vs the 2.4.2 oracle + sql-tag property fuzz
         run: npm run fuzz -- 20000
 
+  # Executes the built queries against real servers and asserts on the rows that
+  # come back. The unit suite only ever proves the builder agrees with OUR
+  # reading of the SQL grammars — every lexer bug found so far was exactly that
+  # kind of mistake, so this is the gate that actually retires the risk.
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: sbtest
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: secret
+          MYSQL_DATABASE: sbtest
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -psecret --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - run: npm install
+      - name: Integration tests against real Postgres + MySQL
+        env:
+          PG_URL: postgres://postgres:secret@localhost:5432/sbtest
+          MYSQL_URL: mysql://root:secret@127.0.0.1:3306/sbtest
+        run: npm run test:integration
+
   package-boundary:
     runs-on: ubuntu-latest
     steps:

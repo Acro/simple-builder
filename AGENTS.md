@@ -18,6 +18,13 @@ security model, and gotchas in one file.
   under `--unhandled-rejections=strict`.
 - Fuzz: `npm run fuzz -- [iterations] [seed]` — see below. Failures print the
   seed for exact reproduction.
+- Integration: `npm run db:up` (docker Postgres + MySQL), then
+  `npm run test:integration`; `npm run db:down` to clean up. CI runs this via
+  service containers. **This is the only gate that checks the lexer against the
+  engines rather than against our reading of their manuals** — every lexer bug
+  found so far (pg `E'…'` escapes, MySQL's whitespace-after-`--` rule) was a
+  grammar misreading that unit tests happily confirmed. Add a case here whenever
+  you touch `lex()`.
 - Package surface: `npx publint --strict` and `npx @arethetypeswrong/cli --pack .`
   must both stay clean; CI gates on them.
 
@@ -33,11 +40,17 @@ security model, and gotchas in one file.
 3. **`lex()`** — the reason the `?` API is correct. Skips string literals,
    quoted identifiers, line/block comments, and dollar-quoted bodies; treats
    `?|`/`?&`/`??` as operators; honours `\?` as an escaped literal `?`. Only
-   what survives all that is a placeholder. Quote runs go through
-   `consumeQuoted`, which is dialect-aware about backslash escapes: they apply
-   in MySQL and in a Postgres `E'…'` escape string, but NOT in a standard pg
-   string (`standard_conforming_strings` makes `\` ordinary) — getting this
-   wrong binds a value *inside* a string literal.
+   what survives all that is a placeholder.
+
+   Every dialect difference here is load-bearing and verified against real
+   servers by `test/integration.cjs` — do not "simplify" any of them:
+   - Quote runs go through `consumeQuoted`, dialect-aware about backslash
+     escapes: they apply in MySQL and in a Postgres `E'…'` escape string, but
+     NOT in a standard pg string (`standard_conforming_strings` makes `\`
+     ordinary). Getting this wrong binds a value *inside* a string literal.
+   - `--` is a comment in MySQL only when followed by whitespace or EOF
+     (`SELECT 1--2` is 3 there); Postgres always treats it as a comment.
+   - `#` is a comment in MySQL only; in Postgres it starts `#>` / `#-`.
 4. **`classify()`** — positional clause detection from the text immediately
    before each placeholder (`\bVALUES\s+$` etc). `\b` is load-bearing: it keeps
    `OFFSET ?` from reading as `SET ?` and `JOIN ?` from reading as `IN ?`.

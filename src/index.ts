@@ -217,9 +217,17 @@ const lex = (fragment: string, dialect: Dialect): Piece[] => {
       continue
     }
 
-    // Line comment. MySQL additionally treats `#` as one; Postgres does NOT —
-    // there `#` starts operators like `#>` / `#-`, so this must stay gated.
-    if ((c === '-' && fragment[i + 1] === '-') || (dialect === 'mysql' && c === '#')) {
+    // Line comment. Two dialect differences, both verified against real servers:
+    //  - MySQL needs whitespace (or EOF) after `--`; without it `--` is two
+    //    minus signs, so `SELECT 1--2` is 3 and `SELECT 1--?` really does bind.
+    //    Postgres always treats `--` as a comment.
+    //  - MySQL also treats `#` as a line comment; Postgres does NOT — there `#`
+    //    starts operators like `#>` / `#-`.
+    const dashComment =
+      c === '-' &&
+      fragment[i + 1] === '-' &&
+      (dialect !== 'mysql' || i + 2 >= n || /\s/.test(fragment[i + 2]))
+    if (dashComment || (dialect === 'mysql' && c === '#')) {
       while (i < n && fragment[i] !== '\n') { buf += fragment[i]; i++ }
       continue
     }
