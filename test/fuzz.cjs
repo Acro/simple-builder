@@ -120,3 +120,165 @@ for (let iter = 0; iter < ITERATIONS; iter++) {
 }
 
 console.log(`✓ differential fuzz: ${checked} scenarios agree with the 2.4.2 oracle (base seed 0x${BASE_SEED.toString(16)})`)
+
+// ─────────────────────────────────────────────────────────────────────────
+// Property fuzz — the `sql` tag and the lexer have no 2.4.2 counterpart, so
+// they are checked against invariants rather than an oracle.
+//
+//   1. every interpolated value is bound, in left-to-right order, and NEVER
+//      appears in the SQL text (the core safety property)
+//   2. pg renders exactly $1..$n, in order, with n === values.length
+//   3. mysql renders exactly n `?`, with n === values.length
+//   4. rendering is pure — the same fragment renders identically every time,
+//      and for either dialect
+// ─────────────────────────────────────────────────────────────────────────
+
+const { sql, pg, mysql } = dist
+
+// Distinctive, injection-shaped strings: if any of these ever land in `text`,
+// the safety property is broken.
+const POISON = [
+  "'; DROP TABLE users; --",
+  '1 OR 1=1',
+  '$1',
+  '?',
+  'a`b"c',
+  '$$x$$',
+]
+
+// Identifier poison is kept DISJOINT from value poison: sql.id legitimately
+// writes (escaped) identifier text into the SQL, so sharing a pool would make
+// the "no value ever reaches the text" check ambiguous.
+const ID_POISON = [
+  'we`ird',
+  'ev"il',
+  'my table',
+  'sel$ect',
+  'x?y',
+  'has$1dollar',
+]
+
+const randPoison = (rand) => POISON[Math.floor(rand() * POISON.length)]
+const randIdPoison = (rand) => ID_POISON[Math.floor(rand() * ID_POISON.length)]
+
+// Build a random nested fragment, tracking the values it should bind in order.
+const randFragment = (rand, depth, expected) => {
+  const roll = rand()
+
+  if (depth < 2 && roll < 0.25) {
+    // Nested composition.
+    const left = randFragment(rand, depth + 1, expected)
+    const right = randFragment(rand, depth + 1, expected)
+    return sql`(${left} AND ${right})`
+  }
+
+  if (roll < 0.4) {
+    const v = randPoison(rand)
+    expected.push(v)
+    return sql`name = ${v}`
+  }
+
+  if (roll < 0.55) {
+    const arr = Array.from({ length: 1 + Math.floor(rand() * 4) }, () => randPoison(rand))
+    arr.forEach((v) => expected.push(v))
+    return sql`id IN ${arr}`
+  }
+
+  if (roll < 0.65) {
+    // Identifiers are quoted, not bound — they add no values.
+    return sql`${sql.id(randIdPoison(rand))} IS NOT NULL`
+  }
+
+  if (roll < 0.75) {
+    const items = Array.from({ length: 1 + Math.floor(rand() * 3) }, () => {
+      const v = randPoison(rand)
+      expected.push(v)
+      return sql`x = ${v}`
+    })
+    return sql`(${sql.join(items, ' OR ')})`
+  }
+
+  if (roll < 0.85) {
+    // A jsonb `?` operator in the tag needs no escaping — it must survive.
+    const v = randPoison(rand)
+    expected.push(v)
+    return sql`data ? ${v}`
+  }
+
+  if (roll < 0.92) {
+    // sql.value binds the array itself as ONE parameter.
+    const v = randPoison(rand)
+    expected.push([v])
+    return sql`tags = ${sql.value([v])}`
+  }
+
+  const v = randPoison(rand)
+  expected.push(v)
+  return sql`created_at > ${v}`
+}
+
+// Quoted identifiers may legitimately contain `?` or `$1` (sql.id quotes the
+// poison strings), so blank them out before scanning for placeholders —
+// otherwise the checker, not the library, is what's wrong.
+//
+// Dialect-aware on purpose: pg quotes with "double quotes" and treats backticks
+// as ordinary characters, so stripping backtick spans from pg text would eat
+// whatever sits between two identifiers — including a real $1.
+const stripQuoted = (text, dialect) =>
+  dialect === 'mysql'
+    ? text.replace(/`(?:[^`]|``)*`/g, '``')
+    : text.replace(/"(?:[^"]|"")*"/g, '""')
+
+const pgPlaceholders = (text) => (stripQuoted(text, 'pg').match(/\$\d+/g) || [])
+
+let propChecked = 0
+for (let iter = 0; iter < ITERATIONS; iter++) {
+  const seed = (BASE_SEED + 0x9e3779b9 + iter) >>> 0
+  const rand = prng(seed)
+
+  const expected = []
+  const frag = sql`SELECT * FROM t WHERE ${randFragment(rand, 0, expected)}`
+
+  try {
+    const a = pg(frag)
+    const b = mysql(frag)
+
+    const aValues = a.values || []
+    const bValues = b.values || []
+
+    // 1. values bound in order, and never inlined into the text.
+    assert.deepStrictEqual(aValues, expected, 'pg values must match interpolation order')
+    assert.deepStrictEqual(bValues, expected, 'mysql values must match interpolation order')
+    for (const v of expected) {
+      if (typeof v === 'string' && v.length > 3) {
+        assert.ok(a.text.indexOf(v) === -1, `value leaked into pg text: ${v}`)
+        assert.ok(b.text.indexOf(v) === -1, `value leaked into mysql text: ${v}`)
+      }
+    }
+
+    // 2. pg renders exactly $1..$n in order.
+    const holes = pgPlaceholders(a.text)
+    assert.strictEqual(holes.length, expected.length, 'pg placeholder count')
+    holes.forEach((h, idx) => assert.strictEqual(h, '$' + (idx + 1), 'pg placeholder order'))
+
+    // 3. mysql renders exactly n `?` — minus the jsonb `?` operators the
+    //    generator may emit, which are part of the literal text.
+    const mysqlText = stripQuoted(b.text, 'mysql')
+    const jsonbOps = (mysqlText.match(/data \?/g) || []).length
+    const qs = (mysqlText.match(/\?/g) || []).length - jsonbOps
+    assert.strictEqual(qs, expected.length, 'mysql placeholder count')
+
+    // 4. rendering is pure.
+    assert.deepStrictEqual(pg(frag), a, 'pg render must be repeatable')
+    assert.deepStrictEqual(mysql(frag), b, 'mysql render must be repeatable')
+  } catch (err) {
+    console.error(`\nPROPERTY FAILURE at seed ${seed}:`)
+    console.error('  pg    :', JSON.stringify(pg(frag)))
+    console.error('  mysql :', JSON.stringify(mysql(frag)))
+    console.error('  expect:', JSON.stringify(expected))
+    throw err
+  }
+  propChecked++
+}
+
+console.log(`✓ property fuzz: ${propChecked} sql-tag scenarios hold all invariants`)

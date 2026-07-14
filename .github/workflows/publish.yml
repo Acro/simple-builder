@@ -43,8 +43,13 @@ jobs:
       - name: Full gate — build + type gate + unit suite
         run: npm test
 
-      - name: Full gate — differential fuzz
-        run: npm run fuzz -- 10000
+      - name: Full gate — differential + property fuzz
+        run: npm run fuzz -- 20000
+
+      - name: Full gate — package surface (publint + are-the-types-wrong)
+        run: |
+          npx --yes publint@latest --strict
+          npx --yes @arethetypeswrong/cli@latest --pack . --ignore-rules cjs-resolves-to-esm
 
       - name: Full gate — package-boundary smoke (CJS + ESM) from the tarball
         run: |

@@ -28,8 +28,8 @@ jobs:
         with:
           node-version: 22.x
       - run: npm install
-      - name: Differential fuzz vs the 2.4.2 oracle (10000 scenarios)
-        run: npm run fuzz -- 10000
+      - name: Fuzz — differential vs the 2.4.2 oracle + sql-tag property fuzz
+        run: npm run fuzz -- 20000
 
   package-boundary:
     runs-on: ubuntu-latest
