@@ -179,6 +179,39 @@ touch the release path:
   Node 22 ships npm 10, which has no OIDC support at all and fails with
   `ENEEDAUTH`. That is the error `await-parallel-limit` hit on its first
   release attempt.
+
+### Do not write `DROP TABLE` in README.md
+
+The registry sits behind Cloudflare, and `npm publish` sends **README.md as
+plaintext** in the publish metadata (the tarball itself is gzipped and base64'd,
+so its contents are invisible to the WAF — `llms.txt`, `src/`, and `dist/` are
+all safe). Cloudflare's managed SQL-injection ruleset matches the literal string
+`DROP TABLE` in a request body and blocks the request.
+
+The failure is maximally misleading: `E403 Forbidden - PUT` *after* every gate
+has passed, with npm's generic "forbidden by your security policy" text and no
+response body, from CI and locally alike, with OIDC and with an owner's OTP —
+because the block happens in front of the registry, not inside it. It cost a
+long debugging session on 3.0.0 before a proxy revealed the body was a
+Cloudflare HTML error page rather than an npm JSON error.
+
+Verified by probing the registry with unauthenticated `PUT`s (the WAF sits in
+front of auth, so this needs no token and publishes nothing):
+
+| `readme` payload | Result |
+| --- | --- |
+| `1; DROP TABLE users` | blocked |
+| `1; DROP TABLE users; #` | blocked |
+| `'; DROP TABLE users; --` | blocked |
+| `1; DELETE FROM users; --` | passes |
+| `1; TRUNCATE users; --` | passes |
+| `UNION SELECT password FROM users` | passes |
+
+Only `DROP TABLE` matters — the `--` comment and quoting are irrelevant. Use
+`DELETE FROM` in README examples; it demonstrates a destructive injection just
+as well. To re-test after editing the README, PUT its contents as `readme` to
+`https://registry.npmjs.org/simple-builder` with no auth: a Cloudflare HTML
+body means blocked, `{"error":"Not found"}` means it will get through.
 - Renaming `publish.yml`, or moving the publish step into a different workflow
   file, breaks publishing until the trusted publisher is updated to match.
 - The tag must agree with `package.json` — a guard step fails the run otherwise.
