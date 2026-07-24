@@ -149,3 +149,19 @@ Kept OUT of the differential fuzzer's domain (covered by unit tests instead):
 Bump `version` in `package.json`, then publish a GitHub Release tagged `vX.Y.Z`.
 The publish workflow re-runs the full gate and publishes to npm with provenance.
 See `.github/workflows/publish.yml`.
+
+Auth is an npm **trusted publisher** (OIDC): npmjs.com has the repo and the
+workflow *filename* on record, and npm exchanges the Actions OIDC token for a
+short-lived credential at publish time. Consequences worth knowing before you
+touch the release path:
+
+- There is no npm token, in repo secrets or anywhere else, and the package is
+  set to *disallow* tokens — this workflow is the only way to publish. Do not
+  add `NODE_AUTH_TOKEN` back: `setup-node`'s `registry-url` writes
+  `_authToken=${NODE_AUTH_TOKEN}` into `.npmrc`, and an empty value there can
+  read as configured-auth and suppress the OIDC exchange.
+- Renaming `publish.yml`, or moving the publish step into a different workflow
+  file, breaks publishing until the trusted publisher is updated to match.
+- The tag must agree with `package.json` — a guard step fails the run otherwise.
+  Workflows for a `release` event run from the *tagged* commit, so land any
+  workflow change on `master` before you cut the tag.
