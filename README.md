@@ -57,9 +57,9 @@ parameterise something, which makes accidental injection structurally
 impossible:
 
 ```javascript
-const evil = "1; DROP TABLE users; --"
+const evil = "1; DELETE FROM users; --"
 pg(sql`SELECT * FROM users WHERE id = ${evil}`)
-// { text: 'SELECT * FROM users WHERE id = $1', values: ["1; DROP TABLE users; --"] }
+// { text: 'SELECT * FROM users WHERE id = $1', values: ["1; DELETE FROM users; --"] }
 ```
 
 ### Composition
@@ -225,7 +225,7 @@ never tables or columns. So `simple-builder` handles them two ways:
 
   ```javascript
   pg(['UPDATE users SET ?', req.body])
-  // throws if req.body has a key like "x=1; DROP TABLE users; --"
+  // throws if req.body has a key like "x=1; DELETE FROM users; --"
   ```
 
   This is a backstop, not a licence — still choose the columns yourself:
