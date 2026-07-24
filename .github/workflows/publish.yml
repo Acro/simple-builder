@@ -3,10 +3,13 @@ name: Publish
 # Publishes to npm with provenance attestations. Trigger by publishing a
 # GitHub Release (tag `vX.Y.Z`), or manually via workflow_dispatch.
 #
-# One-time setup: add an npm Automation token as the `NPM_TOKEN` repository
-# secret (Settings → Secrets and variables → Actions), OR configure a trusted
-# publisher on npmjs.com (OIDC, no token needed). Provenance requires a public
-# repo and the `id-token: write` permission below.
+# Auth is a trusted publisher (OIDC) — npmjs.com → simple-builder → Settings →
+# Trusted Publisher, pointing at this repo and this workflow filename. There is
+# no token anywhere: npm exchanges the Actions OIDC token for a short-lived
+# credential, which is why `id-token: write` is required below. The package is
+# set to "disallow tokens", so this is the only publish route. Renaming this
+# file, or moving the publish step to another workflow, breaks publishing until
+# the trusted publisher is updated to match.
 
 on:
   release:
@@ -35,7 +38,8 @@ jobs:
         # The tag is passed through `env:`, never interpolated into the script
         # body: `${{ }}` expands before bash runs, so a tag name containing shell
         # metacharacters (git permits $ ` " ; |) would otherwise execute here —
-        # in a job holding id-token: write and NPM_TOKEN.
+        # in a job holding id-token: write, i.e. able to mint a publish
+        # credential for the package.
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
@@ -68,9 +72,13 @@ jobs:
           node --unhandled-rejections=strict smoke.mjs
 
       - name: Publish with provenance
+        # No NODE_AUTH_TOKEN on purpose. setup-node's registry-url writes an
+        # .npmrc containing `_authToken=${NODE_AUTH_TOKEN}`; with no token
+        # secret that expands to an EMPTY credential, which npm can read as
+        # "auth already configured" and skip the OIDC exchange — a 401 after
+        # every gate above has run. Trusted publishing wants the token absent.
+        # npm >= 11.5.1 is what implements the exchange; 22.x ships older.
         run: |
           npm install -g npm@latest
           npm --version
           npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
