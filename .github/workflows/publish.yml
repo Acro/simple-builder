@@ -28,8 +28,20 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.x
-          registry-url: 'https://registry.npmjs.org'
+          # No registry-url, deliberately: it makes setup-node write
+          # `_authToken=${NODE_AUTH_TOKEN}` into an .npmrc unconditionally, and
+          # npm runs the OIDC exchange only when it finds no usable credential
+          # for the registry. Whether that line is harmless comes down to how
+          # the variable expands, which is far too subtle to leave standing:
+          #   - undefined (no `env:` at all) → the line stays literally
+          #     `${NODE_AUTH_TOKEN}`, reads as a credential, OIDC is skipped,
+          #     and the run 403s on PUT after every gate has passed
+          #   - empty string (`env:` naming a secret that does not exist) →
+          #     expands to an empty credential, OIDC runs, publish succeeds
+          # The sibling repo await-parallel-limit publishes fine on the second
+          # spelling. Omitting registry-url removes the question entirely.
+          # See actions/setup-node#1551. npm defaults to registry.npmjs.org.
+          node-version: 22.x # trusted publishing needs >= 22.14.0
 
       - run: npm install
 
@@ -71,13 +83,32 @@ jobs:
           node --unhandled-rejections=strict smoke.cjs
           node --unhandled-rejections=strict smoke.mjs
 
+      # Fails fast and legibly if anything has put a credential back in npm's
+      # config: without this, a suppressed OIDC exchange only shows up as an
+      # opaque 403 at the very end, after ~5 minutes of gates.
+      - name: Guard — no registry credential (a token would suppress OIDC)
+        run: |
+          for f in "${NPM_CONFIG_USERCONFIG:-}" "$HOME/.npmrc" "$GITHUB_WORKSPACE/.npmrc"; do
+            if [ -n "$f" ] && [ -f "$f" ]; then
+              sed -i '/_authToken/d' "$f"
+              echo "stripped any _authToken line from $f"
+            fi
+          done
+          # Never echo the value itself — it would land in the public log.
+          TOKEN="$(npm config get //registry.npmjs.org/:_authToken 2>/dev/null || true)"
+          case "$TOKEN" in
+            ''|undefined|null)
+              echo "No registry credential configured — npm will run the OIDC exchange." ;;
+            *)
+              echo "::error::A registry auth token is configured; npm would skip the OIDC exchange and 403."
+              exit 1 ;;
+          esac
+
       - name: Publish with provenance
-        # No NODE_AUTH_TOKEN on purpose. setup-node's registry-url writes an
-        # .npmrc containing `_authToken=${NODE_AUTH_TOKEN}`; with no token
-        # secret that expands to an EMPTY credential, which npm can read as
-        # "auth already configured" and skip the OIDC exchange — a 401 after
-        # every gate above has run. Trusted publishing wants the token absent.
-        # npm >= 11.5.1 is what implements the exchange; 22.x ships older.
+        # npm >= 11.5.1 implements the OIDC exchange; Node 22.x ships npm 10.
+        # Provenance is automatic under trusted publishing, but --provenance is
+        # kept explicit so the run fails loudly rather than silently publishing
+        # an unattested tarball if the exchange ever stops happening.
         run: |
           npm install -g npm@latest
           npm --version
