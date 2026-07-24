@@ -156,10 +156,29 @@ short-lived credential at publish time. Consequences worth knowing before you
 touch the release path:
 
 - There is no npm token, in repo secrets or anywhere else, and the package is
-  set to *disallow* tokens — this workflow is the only way to publish. Do not
-  add `NODE_AUTH_TOKEN` back: `setup-node`'s `registry-url` writes
-  `_authToken=${NODE_AUTH_TOKEN}` into `.npmrc`, and an empty value there can
-  read as configured-auth and suppress the OIDC exchange.
+  set to *disallow* tokens — this workflow is the only way to publish.
+- **Do not add `registry-url` to the `setup-node` step.** npm runs the OIDC
+  exchange only when it finds no usable credential for the registry, and
+  `registry-url` makes setup-node write `_authToken=${NODE_AUTH_TOKEN}` into an
+  `.npmrc` unconditionally. Whether that line is harmless then turns on how the
+  variable expands, which is much too subtle to rely on:
+  - **undefined** (no `env:` at all) — the line survives as the literal string
+    `${NODE_AUTH_TOKEN}`, npm reads it as a credential, skips OIDC, and the run
+    dies with `E403` on `PUT` *after* all five gates have passed. That reads
+    like a permissions problem on npmjs.com and is not one. It cost us a failed
+    3.0.0 release.
+  - **empty string** (an `env:` naming a secret that does not exist) — expands
+    to an empty credential, npm falls through to OIDC, publish succeeds. This
+    is what the sibling repo `await-parallel-limit` does.
+
+  Omitting `registry-url` removes the question; npm defaults to
+  registry.npmjs.org regardless. See actions/setup-node#1551. The guard step
+  immediately before publish asserts no credential is configured and fails
+  fast, so this can never again surface as a late 403.
+- `npm install -g npm@latest` before publishing is load-bearing, not hygiene:
+  Node 22 ships npm 10, which has no OIDC support at all and fails with
+  `ENEEDAUTH`. That is the error `await-parallel-limit` hit on its first
+  release attempt.
 - Renaming `publish.yml`, or moving the publish step into a different workflow
   file, breaks publishing until the trusted publisher is updated to match.
 - The tag must agree with `package.json` — a guard step fails the run otherwise.
