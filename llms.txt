@@ -1,0 +1,228 @@
+# simple-builder
+
+> Tiny SQL builder that keeps your SQL visible. Two APIs — a tagged template
+> (`sql`) and the classic `?` partials list — both returning `{ text, values }`
+> for the pg, mysql and mysql2 drivers. Zero dependencies, ~16 kB. CJS + ESM.
+> Node >= 16. First-class TypeScript types.
+
+## Install
+
+npm install simple-builder
+
+## Import (both work everywhere)
+
+CJS:  const { pg, mysql, sql } = require('simple-builder')
+      const simpleBuilder = require('simple-builder').default   // { pg, mysql, sql }
+ESM:  import { pg, mysql, sql } from 'simple-builder'
+      import simpleBuilder from 'simple-builder'                // { pg, mysql, sql }
+
+## Renderers
+
+pg(x): { text, values? }       // renders $1, $2, … placeholders
+mysql(x): { text, values? }    // keeps ? placeholders (also mysql2)
+
+`x` is one of:
+  - an Sql fragment:               pg(sql`... ${v}`)
+  - an array of partials/values:   pg(['... ?', v])
+  - an argument list:              pg('... ?', v)
+  - a single ready SQL string:     pg('SELECT * FROM t')  -> { text }
+
+Result always has `text`; `values` is present only when >= 1 value was bound.
+Rendering is pure — the same fragment can be rendered for both dialects.
+
+## The sql tag (recommended)
+
+sql`SELECT * FROM t WHERE id = ${id}`   // every ${} is ALWAYS a bound parameter
+
+sql.id(...parts)             // dialect-quoted identifier: sql.id('public','users') -> "public"."users"
+sql.value(v)                 // bind v as exactly ONE parameter (use for pg array/jsonb columns)
+sql.join(items, sep = ', ')  // join fragments/values
+sql.raw(text)                // UNESCAPED text — unsafe with user input
+sql.empty                    // renders to nothing (useful for conditionals)
+
+- Fragments NEST: sql`... ${sql`a = ${1}`} ...`
+- An interpolated ARRAY expands to a parenthesised list: `id IN ${[1,2,3]}` -> `id IN ($1,$2,$3)`
+- Nothing is scanned for `?` in the tag, so jsonb `?` operators need no escaping.
+
+## The ? partials API (classic, unchanged from 2.x)
+
+- For each SQL string fragment, its `?` count determines how many of the
+  following partials are consumed as bound values. Too few values throws.
+- A bare array in fragment position is a projection list: ['id','name'] -> "id,name".
+- Objects/arrays expand when the fragment ends with a marker (case-insensitive):
+    "... VALUES ?" + object  -> "(k1,k2) VALUES ($1,$2)"     (INSERT)
+    "... SET ?"    + object  -> "SET k1=$1,k2=$2"            (UPDATE)
+    "... WHERE ?"  + object  -> "WHERE k1=$1 AND k2=$2"      (equality, AND-joined)
+    "... IN ?"     + array   -> "IN ($1,$2,$3)"
+- Markers work in BOTH fragment and value position and always splice, never expand:
+    pg(['SELECT * FROM', sql.id(t), 'WHERE id = ?', 1])      // fragment position
+    pg(['SELECT * FROM t WHERE ?', sql`a = ${1}`])           // value position
+  An sql`` fragment spliced at a value position keeps placeholder numbering continuous.
+- Values (Date, null, false, bigint) are always parameterised.
+
+## Lexing: `?` that is not a placeholder
+
+The SQL is LEXED, not scanned. A `?` is left alone inside:
+  - single-quoted string literals ('a?b'). '' escapes everywhere; backslash
+    escapes only in MySQL and in a Postgres E'a\'b ?' escape string (a standard
+    pg string treats \ as an ordinary char — standard_conforming_strings).
+  - quoted identifiers ("a?b" and `a?b`); MySQL "..." also honours \ escapes
+  - line comments (-- ?), MySQL # comments (# ?), block comments (/* ? */, nested)
+    NOTE: # is a comment in MySQL only — in pg it starts #> / #- jsonb operators.
+    NOTE: MySQL needs whitespace after `--` for a comment (verified on 8.4):
+      `SELECT 1--?` is NOT a comment there (it is 1 minus -?, and ? binds);
+      `SELECT 1-- ?` is. Postgres always treats `--` as a comment.
+  - dollar-quoted bodies ($$a ? b$$, $tag$a ? b$tag$)
+Postgres `?|` and `?&` jsonb operators are recognised and preserved.
+The BARE jsonb `?` operator is ambiguous — escape it as `\?` (or use the tag).
+
+## Non-default server modes (lexing only; the tag is immune)
+
+pg.withMode(opts) / mysql.withMode(opts) -> a NEW builder (original unchanged).
+
+  ansiQuotes: true                  MySQL sql_mode=ANSI_QUOTES ("..." is an identifier)
+  noBackslashEscapes: true          MySQL sql_mode=NO_BACKSLASH_ESCAPES (\ is ordinary)
+  standardConformingStrings: false  Postgres: \ escapes inside '...' (default true)
+
+Only needed when your SQL has a backslash immediately before a quote inside a
+literal. `''` doubling lexes the same in EVERY mode, and the sql tag never lexes.
+Verified against PG 16 + MySQL 8.4 across the full matrix.
+
+## MySQL driver caveat (about mysql2, not this library)
+
+mysql2's `query()` substitutes values CLIENT-side with backslash escaping
+(escape("it's") -> 'it\'s'). Under sql_mode=NO_BACKSLASH_ESCAPES that is wrong:
+it errors, and round-trips `x\` as `x\\`. Use `execute()` (a real server-side
+prepared statement), which is correct in every mode:
+  const q = mysql(['SELECT * FROM t WHERE id = ?', id])
+  const [rows] = await conn.execute(q.text, q.values)
+
+## Recipes (every one below is executed and verified on each CI run)
+
+Basic value binding — the tag is the recommended default:
+
+```javascript
+pg(sql`SELECT * FROM users WHERE email = ${'a@b.c'}`)
+// { text: 'SELECT * FROM users WHERE email = $1', values: ['a@b.c'] }
+```
+
+Conditional WHERE — use sql.empty for the "off" branch, never string concat:
+
+```javascript
+const activeOnly = true
+const clause = activeOnly ? sql`AND active = ${true}` : sql.empty
+pg(sql`SELECT * FROM users WHERE org = ${'acme'} ${clause}`)
+// { text: 'SELECT * FROM users WHERE org = $1 AND active = $2', values: ['acme', true] }
+```
+
+Build a WHERE from a variable number of conditions:
+
+```javascript
+const conds = [sql`age >= ${18}`, sql`country = ${'CZ'}`]
+pg(sql`SELECT * FROM users WHERE ${sql.join(conds, ' AND ')}`)
+// { text: 'SELECT * FROM users WHERE age >= $1 AND country = $2', values: [18, 'CZ'] }
+```
+
+IN list from an array (do NOT build this by hand):
+
+```javascript
+pg(sql`SELECT * FROM users WHERE id IN ${[1, 2, 3]}`)
+// { text: 'SELECT * FROM users WHERE id IN ($1,$2,$3)', values: [1, 2, 3] }
+```
+
+INSERT an object and return the id:
+
+```javascript
+pg(['INSERT INTO users VALUES ?', { username: 'ada', age: 36 }, 'RETURNING id'])
+// { text: 'INSERT INTO users (username,age) VALUES ($1,$2) RETURNING id', values: ['ada', 36] }
+```
+
+UPDATE from an object (choose the columns yourself — never pass req.body):
+
+```javascript
+pg(['UPDATE users SET ?', { age: 37 }, 'WHERE id = ?', 1])
+// { text: 'UPDATE users SET age=$1 WHERE id = $2', values: [37, 1] }
+```
+
+Dynamic table/column name — sql.id quotes it; a placeholder cannot:
+
+```javascript
+pg(sql`SELECT * FROM ${sql.id('public', 'users')} WHERE id = ${1}`)
+// { text: 'SELECT * FROM "public"."users" WHERE id = $1', values: [1] }
+```
+
+Dynamic ORDER BY direction — map user input to a fixed set, THEN sql.raw:
+
+```javascript
+const dir = ({ asc: 'ASC', desc: 'DESC' })['desc'] || 'ASC'
+pg(sql`SELECT * FROM users ORDER BY ${sql.id('created_at')} ${sql.raw(dir)}`)
+// { text: 'SELECT * FROM users ORDER BY "created_at" DESC' }
+```
+
+Pagination:
+
+```javascript
+pg(sql`SELECT * FROM users ORDER BY id LIMIT ${20} OFFSET ${40}`)
+// { text: 'SELECT * FROM users ORDER BY id LIMIT $1 OFFSET $2', values: [20, 40] }
+```
+
+LIKE search — the value is injection-safe, but escape % and _ if they should be
+literal (the library cannot know your intent):
+
+```javascript
+const term = '50%_off'
+const escaped = term.replace(/([%_\\])/g, '\\$1')
+pg(sql`SELECT * FROM products WHERE name LIKE ${'%' + escaped + '%'}`)
+// { text: 'SELECT * FROM products WHERE name LIKE $1', values: ['%50\\%\\_off%'] }
+```
+
+Postgres jsonb — the tag needs no escaping for the `?` operator:
+
+```javascript
+pg(sql`SELECT * FROM t WHERE data ? ${'key'} AND id = ${1}`)
+// { text: 'SELECT * FROM t WHERE data ? $1 AND id = $2', values: ['key', 1] }
+```
+
+The same fragment renders for either dialect (rendering is pure):
+
+```javascript
+const frag = sql`SELECT * FROM t WHERE id = ${7}`
+mysql(frag)
+// { text: 'SELECT * FROM t WHERE id = ?', values: [7] }
+```
+
+## Security
+
+- Values are safe: parameterised, never inlined into `text`, in BOTH APIs.
+- Identifiers CANNOT be parameterised by any driver. So:
+  * Object keys in VALUES ?/SET ?/WHERE ? are ALLOW-LISTED to plain identifiers
+    (/^[A-Za-z_][A-Za-z0-9_$]*(\.[...])*$/). Anything else THROWS. Still don't
+    pass user-controlled keys — choose columns yourself.
+  * Use sql.id() for dynamic identifiers; it quotes and escapes per dialect.
+  * NOTE: quoting makes identifiers case-sensitive in Postgres (unquoted names
+    fold to lower case).
+- sql.raw() is unsafe by construction; map user input to a fixed allowed set first.
+- NOT handled for you: LIKE wildcards (% and _ in a bound value still match as
+  wildcards — escape \% \_), and second-order injection (parameterise data read
+  back out of the DB too).
+
+## Errors
+
+- Value with no preceding `?` fragment -> "expected an SQL string fragment...".
+- More `?` than values that follow    -> "has N placeholder(s) but only M value(s)...".
+- Empty object to VALUES ?/SET ?/WHERE ? -> "empty object...".
+- Non-identifier object key           -> "is not a valid column name...".
+- sql.id('') or NUL in identifier     -> throws.
+
+## 3.0.0 notes (vs 2.4.2)
+
+- The `?` partials API keeps the same output for all documented usage (verified
+  by a differential fuzzer against 2.4.2 on every CI run).
+- NEW: the `sql` tagged template + sql.id/value/join/raw/empty.
+- NEW: real lexer — `?` inside literals/identifiers/comments/dollar-quotes is no
+  longer mistaken for a placeholder; jsonb `?|`/`?&` survive.
+- NEW: object keys allow-listed; `sql.id()` for dynamic identifiers.
+- Ships TypeScript types + ESM alongside CJS; `main` is `dist/index.js`.
+- Fixes: lowercase `in ?` now expands; the caller's partials array is no longer
+  mutated; empty expansion objects throw; `OFFSET ?` is no longer misread as
+  `SET ?`; too-few-values throws instead of binding undefined.

@@ -1,0 +1,76 @@
+name: Publish
+
+# Publishes to npm with provenance attestations. Trigger by publishing a
+# GitHub Release (tag `vX.Y.Z`), or manually via workflow_dispatch.
+#
+# One-time setup: add an npm Automation token as the `NPM_TOKEN` repository
+# secret (Settings → Secrets and variables → Actions), OR configure a trusted
+# publisher on npmjs.com (OIDC, no token needed). Provenance requires a public
+# repo and the `id-token: write` permission below.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for npm provenance (OIDC)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm install
+
+      - name: Guard — tag matches package.json version
+        if: github.event_name == 'release'
+        # The tag is passed through `env:`, never interpolated into the script
+        # body: `${{ }}` expands before bash runs, so a tag name containing shell
+        # metacharacters (git permits $ ` " ; |) would otherwise execute here —
+        # in a job holding id-token: write and NPM_TOKEN.
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "v$PKG_VERSION" != "$TAG" ] && [ "$PKG_VERSION" != "$TAG" ]; then
+            echo "::error::package.json is $PKG_VERSION but the release tag is $TAG"
+            exit 1
+          fi
+
+      - name: Full gate — build + type gate + unit suite
+        run: npm test
+
+      - name: Full gate — differential + property fuzz
+        run: npm run fuzz -- 20000
+
+      - name: Full gate — package surface (publint + are-the-types-wrong)
+        run: |
+          npx --yes publint@latest --strict
+          npx --yes @arethetypeswrong/cli@latest --pack . --ignore-rules cjs-resolves-to-esm
+
+      - name: Full gate — package-boundary smoke (CJS + ESM) from the tarball
+        run: |
+          npm pack --pack-destination /tmp
+          TARBALL="$(ls /tmp/simple-builder-*.tgz)"
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          npm init -y > /dev/null
+          npm install "$TARBALL"
+          cp "$GITHUB_WORKSPACE/test/boundary/smoke.cjs" "$GITHUB_WORKSPACE/test/boundary/smoke.mjs" .
+          node --unhandled-rejections=strict smoke.cjs
+          node --unhandled-rejections=strict smoke.mjs
+
+      - name: Publish with provenance
+        run: |
+          npm install -g npm@latest
+          npm --version
+          npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

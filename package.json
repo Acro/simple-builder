@@ -1,25 +1,84 @@
 {
   "name": "simple-builder",
-  "version": "2.4.2",
-  "description": "Simple SQL query string builder",
-  "main": "lib/builder.js",
-  "scripts": {
-    "test": "node test/build_query.js"
+  "version": "3.0.0",
+  "description": "Tiny SQL builder that keeps your SQL visible. A safe sql`` tagged template plus the classic ? partials API, both returning { text, values } for pg, mysql and mysql2. Always-parameterised values, quoted identifiers, object expansion for INSERT/UPDATE/WHERE/IN. Zero dependencies, first-class TypeScript types, CJS + ESM.",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./esm/index.d.mts",
+        "default": "./esm/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
   },
-  "author": "Ondrej Machek <acrocz@gmail.com>",
-  "license": "MIT",
-  "dependencies": {},
+  "files": [
+    "dist",
+    "esm",
+    "llms.txt"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "prepare": "tsc",
+    "test": "tsc && tsc --noEmit --strict --target es2017 --lib es2017 --moduleResolution node test/types.test.ts && node --unhandled-rejections=strict test/index.test.cjs && node --unhandled-rejections=strict test/docs.test.cjs",
+    "fuzz": "tsc && node test/fuzz.cjs",
+    "test:integration": "tsc && node --unhandled-rejections=strict test/integration.cjs",
+    "db:up": "docker run -d --name sb-pg -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=sbtest -p 55432:5432 postgres:16-alpine && docker run -d --name sb-mysql -e MYSQL_ROOT_PASSWORD=secret -e MYSQL_DATABASE=sbtest -p 53306:3306 mysql:8",
+    "db:down": "docker rm -f sb-pg sb-mysql"
+  },
   "keywords": [
     "sql",
     "query",
     "builder",
-    "query builder",
+    "query-builder",
+    "sql-builder",
+    "sql-template",
+    "tagged-template",
+    "template-literal",
     "mysql",
+    "mysql2",
     "postgresql",
-    "postgres"
+    "postgres",
+    "pg",
+    "parameterized",
+    "prepared-statements",
+    "placeholders",
+    "sql-injection",
+    "escape",
+    "identifier",
+    "insert",
+    "update",
+    "where-in",
+    "typescript",
+    "zero-dependency",
+    "esm",
+    "cjs"
   ],
+  "author": "Ondrej Machek, acrocz@gmail.com",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16"
+  },
   "repository": {
     "type": "git",
-    "url": "git://github.com/Acro/simple-builder"
+    "url": "git+https://github.com/Acro/simple-builder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Acro/simple-builder/issues"
+  },
+  "homepage": "https://github.com/Acro/simple-builder#readme",
+  "dependencies": {},
+  "devDependencies": {
+    "mysql2": "^3.22.6",
+    "pg": "^8.22.0",
+    "typescript": "^5.4.0"
   }
 }

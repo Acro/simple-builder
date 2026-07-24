@@ -1,0 +1,722 @@
+/**
+ * simple-builder — a tiny SQL builder that keeps your SQL visible.
+ *
+ * Two ways to write the same query, both returning `{ text, values }` shaped
+ * for the `pg`, `mysql`, and `mysql2` drivers:
+ *
+ *   pg(['SELECT * FROM users WHERE id = ?', id])   // partials + `?`
+ *   pg(sql`SELECT * FROM users WHERE id = ${id}`)  // tagged template
+ *
+ * For `pg` the placeholders render as `$1, $2, …`; for `mysql` they stay `?`.
+ *
+ * SECURITY MODEL
+ * - Values are ALWAYS parameterised — they never enter the SQL text.
+ * - Identifiers cannot be parameterised by any driver, so object keys used by
+ *   `VALUES ?` / `SET ?` / `WHERE ?` are validated against a strict identifier
+ *   allow-list and rejected if they are anything else. Use `sql.id()` for
+ *   dynamic identifiers; it quotes per dialect.
+ * - `sql.raw()` is the only way to get unescaped text in, and is unsafe with
+ *   user input by construction.
+ */
+
+/** Target driver dialect. `pg` renders `$1`-style placeholders; `mysql`
+ *  (also `mysql2`) keeps `?`. */
+export type Dialect = 'pg' | 'mysql'
+
+/** A single bound value. Passed through to the driver untouched. */
+export type Value = string | number | boolean | bigint | null | undefined | Date
+
+/** An object whose keys are column names and values are bound parameters. */
+export type Row = Record<string, unknown>
+
+/** The result, shaped for `driver.query(text, values)`. `values` is omitted
+ *  when the query bound no parameters. */
+export interface BuildResult {
+  text: string
+  values?: unknown[]
+}
+
+/**
+ * Server settings that change how SQL *lexes*, and therefore which `?` is a
+ * placeholder. The defaults match a stock server, so you only need this if you
+ * have changed them. Verified against Postgres 16 and MySQL 8.4.
+ *
+ * Only matters for a backslash immediately before a quote inside a literal —
+ * `''` doubling lexes identically in every mode, and the `sql` tag never lexes
+ * at all, so both are mode-proof.
+ */
+export interface Mode {
+  /** MySQL, `sql_mode=ANSI_QUOTES`: `"…"` delimits an identifier (escaped by
+   *  `""` doubling), not a string with backslash escapes. Default `false`. */
+  ansiQuotes?: boolean
+  /** MySQL, `sql_mode=NO_BACKSLASH_ESCAPES`: `\` is an ordinary character
+   *  inside string literals. Default `false`. */
+  noBackslashEscapes?: boolean
+  /** Postgres, `standard_conforming_strings`: when `false`, `\` escapes inside
+   *  ordinary `'…'` strings (as it always does inside `E'…'`). Default `true`,
+   *  the server default since 9.1. */
+  standardConformingStrings?: boolean
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Identifiers
+//
+// No driver can bind an identifier — placeholders name data, never tables or
+// columns (OWASP Query Parameterization Cheat Sheet). So identifiers are
+// handled two ways: object keys are ALLOW-LISTED (a plain identifier passes
+// through byte-for-byte, anything else throws), and `sql.id()` QUOTES per
+// dialect for the dynamic case.
+// ─────────────────────────────────────────────────────────────────────────
+
+// A conservative allow-list: `col`, `tbl.col`, `a.b.c`. Deliberately narrower
+// than what the engines accept — exotic names must go through `sql.id()`.
+const PLAIN_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)*$/
+
+const assertPlainIdentifier = (key: string, clause: string): string => {
+  if (!PLAIN_IDENTIFIER.test(key)) {
+    throw new Error(
+      `simple-builder: ${JSON.stringify(key)} is not a valid column name for the ` +
+        `${clause} clause. Keys become SQL identifiers and cannot be parameterised, ` +
+        'so only plain identifiers (`col`, `tbl.col`) are accepted here. ' +
+        'Never pass user-controlled keys; for a dynamic identifier use sql.id().'
+    )
+  }
+  return key
+}
+
+/** Quote one identifier part for the dialect: `pg` uses "double quotes" and
+ *  doubles embedded quotes; `mysql` uses `backticks` and doubles embedded
+ *  backticks. The quotes are added here — callers never add their own, which
+ *  is what makes quote-mismatch injection impossible. */
+const quoteIdentifier = (dialect: Dialect, name: string): string => {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('simple-builder: sql.id() requires a non-empty string.')
+  }
+  // Rejected by both engines; also the classic quote-escape bypass.
+  if (name.indexOf('\0') !== -1) {
+    throw new Error('simple-builder: identifiers cannot contain a NUL character.')
+  }
+  return dialect === 'mysql'
+    ? '`' + name.replace(/`/g, '``') + '`'
+    : '"' + name.replace(/"/g, '""') + '"'
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Fragment nodes — the shared representation behind both APIs.
+// ─────────────────────────────────────────────────────────────────────────
+
+type Node =
+  | { k: 'text'; v: string }
+  | { k: 'value'; v: unknown }
+  | { k: 'id'; v: string[] }
+
+/** A composable, dialect-agnostic SQL fragment produced by the `sql` tag.
+ *  Render it by passing it to `pg()` or `mysql()`. Fragments nest. */
+export class Sql {
+  /** @internal */
+  readonly nodes: Node[]
+  /** @internal */
+  constructor(nodes: Node[]) {
+    this.nodes = nodes
+  }
+}
+
+/** A dynamic identifier, quoted for the dialect at render time. */
+class Identifier {
+  /** @internal */
+  readonly parts: string[]
+  /** @internal */
+  constructor(parts: string[]) {
+    this.parts = parts
+  }
+}
+
+/** Unescaped SQL text. Unsafe with user input by construction. */
+class Raw {
+  /** @internal */
+  readonly text: string
+  /** @internal */
+  constructor(text: string) {
+    this.text = text
+  }
+}
+
+/** Forces a single bound parameter (arrays would otherwise expand to a list). */
+class Single {
+  /** @internal */
+  readonly value: unknown
+  /** @internal */
+  constructor(value: unknown) {
+    this.value = value
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Lexer for the `?` partials API.
+//
+// A naive scan for `?` corrupts real SQL: Postgres' jsonb operators `?`, `?|`
+// and `?&` are bare question marks, and a `?` can sit inside a string literal,
+// a quoted identifier, a comment, or a dollar-quoted body. (pgx shipped a
+// security fix for exactly the dollar-quote case.) So we lex instead of count:
+// everything below is skipped verbatim, and only a real placeholder is bound.
+// ─────────────────────────────────────────────────────────────────────────
+
+type Piece = { text: string } | { placeholder: true }
+
+/**
+ * Consume a quoted run starting just past its opening delimiter, emitting the
+ * text verbatim, and return the index just past the closing delimiter. The
+ * delimiter is escaped by doubling it; `escapes` additionally honours
+ * backslash escapes. An unterminated run consumes the rest of the fragment
+ * rather than guessing.
+ */
+const consumeQuoted = (
+  fragment: string,
+  start: number,
+  quote: string,
+  escapes: boolean,
+  emit: (s: string) => void
+): number => {
+  const n = fragment.length
+  let i = start
+  while (i < n) {
+    if (escapes && fragment[i] === '\\' && i + 1 < n) {
+      emit(fragment[i] + fragment[i + 1])
+      i += 2
+      continue
+    }
+    if (fragment[i] === quote) {
+      if (fragment[i + 1] === quote) { emit(quote + quote); i += 2; continue }
+      emit(quote)
+      return i + 1
+    }
+    emit(fragment[i])
+    i++
+  }
+  return i
+}
+
+const lex = (fragment: string, dialect: Dialect, mode: Mode): Piece[] => {
+  const pieces: Piece[] = []
+  let buf = ''
+  const flush = (): void => {
+    if (buf) { pieces.push({ text: buf }); buf = '' }
+  }
+
+  let i = 0
+  const n = fragment.length
+
+  while (i < n) {
+    const c = fragment[i]
+
+    // `\?` — escape hatch for a literal `?` (e.g. the jsonb existence operator).
+    if (c === '\\' && fragment[i + 1] === '?') {
+      buf += '?'
+      i += 2
+      continue
+    }
+
+    // Single-quoted string literal. `''` escapes in every mode of both engines.
+    // Backslash is mode-dependent:
+    //  - MySQL: escapes, unless sql_mode=NO_BACKSLASH_ESCAPES.
+    //  - Postgres: escapes inside E'…' always; inside a plain '…' only when
+    //    standard_conforming_strings is off (it is on by default since 9.1).
+    if (c === "'") {
+      const escapes =
+        dialect === 'mysql'
+          ? !mode.noBackslashEscapes
+          : /(?:^|[^A-Za-z0-9_$])[Ee]$/.test(buf) || mode.standardConformingStrings === false
+      buf += c
+      i++
+      i = consumeQuoted(fragment, i, "'", escapes, (s) => { buf += s })
+      continue
+    }
+
+    // Quoted run: `…` (a MySQL identifier) or "…" — a pg identifier, a MySQL
+    // string, or a MySQL identifier under ANSI_QUOTES. A `?` inside is never a
+    // placeholder in any of those readings; only the backslash rule differs.
+    // Backticks and pg/ANSI_QUOTES identifiers use doubling alone; a MySQL
+    // "…" string honours backslash unless NO_BACKSLASH_ESCAPES.
+    if (c === '"' || c === '`') {
+      const escapes =
+        dialect === 'mysql' && c === '"' && !mode.ansiQuotes && !mode.noBackslashEscapes
+      buf += c
+      i++
+      i = consumeQuoted(fragment, i, c, escapes, (s) => { buf += s })
+      continue
+    }
+
+    // Line comment. Two dialect differences, both verified against real servers:
+    //  - MySQL needs whitespace (or EOF) after `--`; without it `--` is two
+    //    minus signs, so `SELECT 1--2` is 3 and `SELECT 1--?` really does bind.
+    //    Postgres always treats `--` as a comment.
+    //  - MySQL also treats `#` as a line comment; Postgres does NOT — there `#`
+    //    starts operators like `#>` / `#-`.
+    const dashComment =
+      c === '-' &&
+      fragment[i + 1] === '-' &&
+      (dialect !== 'mysql' || i + 2 >= n || /\s/.test(fragment[i + 2]))
+    if (dashComment || (dialect === 'mysql' && c === '#')) {
+      while (i < n && fragment[i] !== '\n') { buf += fragment[i]; i++ }
+      continue
+    }
+
+    // Block comment — Postgres allows nesting.
+    if (c === '/' && fragment[i + 1] === '*') {
+      let depth = 0
+      while (i < n) {
+        if (fragment[i] === '/' && fragment[i + 1] === '*') { depth++; buf += '/*'; i += 2; continue }
+        if (fragment[i] === '*' && fragment[i + 1] === '/') {
+          depth--
+          buf += '*/'
+          i += 2
+          if (depth === 0) break
+          continue
+        }
+        buf += fragment[i]
+        i++
+      }
+      continue
+    }
+
+    // Dollar-quoted string: $$...$$ or $tag$...$tag$ (Postgres).
+    if (c === '$') {
+      const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(fragment.slice(i))
+      if (tag) {
+        const delim = tag[0]
+        const end = fragment.indexOf(delim, i + delim.length)
+        if (end === -1) {
+          // Unterminated — consume the rest verbatim rather than guess.
+          buf += fragment.slice(i)
+          i = n
+          continue
+        }
+        buf += fragment.slice(i, end + delim.length)
+        i = end + delim.length
+        continue
+      }
+      buf += c
+      i++
+      continue
+    }
+
+    // `?` — a placeholder only when it is not part of a `?`-family operator.
+    if (c === '?') {
+      const next = fragment[i + 1]
+      if (next === '|' || next === '&' || next === '?') {
+        buf += c + next
+        i += 2
+        continue
+      }
+      flush()
+      pieces.push({ placeholder: true })
+      i++
+      continue
+    }
+
+    buf += c
+    i++
+  }
+
+  flush()
+  return pieces
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Clause markers — classified positionally, from the text immediately before
+// each placeholder. `\b` keeps `offset ?` from reading as `SET ?` and `JOIN ?`
+// from reading as `IN ?`.
+// ─────────────────────────────────────────────────────────────────────────
+
+type Clause = 'insert' | 'update' | 'where' | 'where_in' | null
+
+const RE_VALUES = /\bVALUES\s+$/i
+const RE_SET = /\bSET\s+$/i
+const RE_WHERE = /\bWHERE\s+$/i
+const RE_IN = /\bIN\s+$/i
+
+const classify = (before: string): Clause =>
+  RE_VALUES.test(before) ? 'insert' :
+  RE_SET.test(before) ? 'update' :
+  RE_WHERE.test(before) ? 'where' :
+  RE_IN.test(before) ? 'where_in' :
+  null
+
+/** One of the library's own fragment markers — never a plain data Row. */
+const isMarker = (value: unknown): boolean =>
+  value instanceof Sql ||
+  value instanceof Identifier ||
+  value instanceof Raw ||
+  value instanceof Single
+
+/** A plain object whose keys are column names. Deliberately excludes Date and
+ *  the marker classes: enumerating those would turn their internal fields
+ *  (`parts`, `text`, `nodes`, `value`) into fabricated column names. */
+const isObject = (value: unknown): value is Row =>
+  value !== null && typeof value === 'object' && !(value instanceof Date) && !isMarker(value)
+
+const describe = (value: unknown): string =>
+  value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
+
+// ─────────────────────────────────────────────────────────────────────────
+// Renderer
+// ─────────────────────────────────────────────────────────────────────────
+
+class Renderer {
+  private readonly dialect: Dialect
+  private paramIndex = 1
+  readonly values: unknown[] = []
+
+  constructor(dialect: Dialect) {
+    this.dialect = dialect
+  }
+
+  /** Bind a value and return its placeholder. */
+  bind(value: unknown): string {
+    this.values.push(value)
+    return this.dialect === 'mysql' ? '?' : '$' + this.paramIndex++
+  }
+
+  id(parts: string[]): string {
+    return parts.map((p) => quoteIdentifier(this.dialect, p)).join('.')
+  }
+
+  /** Expand an object/array at a clause marker. `before` is the text emitted so
+   *  far for this fragment; the insert form rewrites its tail. */
+  expand(before: string, clause: Exclude<Clause, null>, row: Row): string {
+    const keys = Object.keys(row)
+    if (keys.length === 0) {
+      throw new Error(
+        `simple-builder: empty object passed to the ${clause} clause — ` +
+          'an object with at least one key is required.'
+      )
+    }
+
+    if (clause === 'where_in') {
+      // Array (or object) of values — keys are indices, not identifiers.
+      const list = keys.map((k) => this.bind(row[k])).join(',')
+      return before + '(' + list + ')'
+    }
+
+    if (clause === 'insert') {
+      const cols = keys.map((k) => assertPlainIdentifier(k, 'VALUES')).join(',')
+      const list = keys.map((k) => this.bind(row[k])).join(',')
+      return before.replace(RE_VALUES, '') + '(' + cols + ') VALUES (' + list + ')'
+    }
+
+    const sep = clause === 'where' ? ' AND ' : ','
+    const label = clause === 'where' ? 'WHERE' : 'SET'
+    const assignments = keys
+      .map((k) => assertPlainIdentifier(k, label) + '=' + this.bind(row[k]))
+      .join(sep)
+    return before + assignments
+  }
+
+  result(text: string): BuildResult {
+    const out: BuildResult = { text }
+    if (this.values.length > 0) out.values = this.values
+    return out
+  }
+}
+
+/** Render fragment nodes through a renderer, so placeholder numbering and the
+ *  values array stay continuous whether the fragment is the whole query or is
+ *  spliced into a `?` partials list. */
+const renderNodes = (r: Renderer, nodes: readonly Node[]): string => {
+  let text = ''
+  for (const node of nodes) {
+    if (node.k === 'text') text += node.v
+    else if (node.k === 'id') text += r.id(node.v)
+    else text += r.bind(node.v)
+  }
+  return text
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// The `?` partials API
+// ─────────────────────────────────────────────────────────────────────────
+
+const buildPartials = (dialect: Dialect, parts: unknown[], mode: Mode): BuildResult => {
+  const r = new Renderer(dialect)
+  const text: string[] = []
+
+  let i = 0
+  while (i < parts.length) {
+    let part = parts[i]
+
+    // A dynamic identifier in fragment position.
+    if (part instanceof Identifier) {
+      text.push(r.id(part.parts))
+      i++
+      continue
+    }
+    if (part instanceof Raw) {
+      text.push(part.text)
+      i++
+      continue
+    }
+
+    // A bare array in fragment position is a projection list: "a","b" → "a,b".
+    if (Array.isArray(part)) part = part.join(',')
+
+    if (typeof part !== 'string') {
+      throw new Error(
+        'simple-builder: expected an SQL string fragment but got ' +
+          `${describe(part)} at position ${i}. A value must follow a fragment ` +
+          'containing a `?` placeholder.'
+      )
+    }
+
+    const pieces = lex(part, dialect, mode)
+    const holes = pieces.filter((p) => 'placeholder' in p).length
+    const available = parts.length - i - 1
+    if (holes > available) {
+      throw new Error(
+        `simple-builder: fragment ${JSON.stringify(part)} has ${holes} placeholder(s) ` +
+          `but only ${available} value(s) follow it.`
+      )
+    }
+
+    let out = ''
+    let k = 0
+    for (const piece of pieces) {
+      if ('text' in piece) { out += piece.text; continue }
+
+      const value = parts[i + 1 + k]
+      k++
+      const clause = classify(out)
+
+      // Markers are checked BEFORE the clause expansion: they are objects, so
+      // `WHERE ?` + sql.id(…) would otherwise enumerate the marker's own fields
+      // as column names and emit `WHERE parts=$1`.
+      if (value instanceof Sql) {
+        out += renderNodes(r, value.nodes)
+      } else if (value instanceof Identifier) {
+        out += r.id(value.parts)
+      } else if (value instanceof Raw) {
+        out += value.text
+      } else if (value instanceof Single) {
+        out += r.bind(value.value)
+      } else if (clause && isObject(value)) {
+        out = r.expand(out, clause, value)
+      } else {
+        out += r.bind(value)
+      }
+    }
+
+    text.push(out)
+    i += 1 + holes
+  }
+
+  return r.result(text.join(' '))
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// The `sql` tagged-template API
+//
+// Nothing here scans for `?`: the literal chunks are yours verbatim and every
+// ${interpolation} is a value unless it is explicitly an Sql / id / raw. That
+// makes accidental injection structurally impossible, and sidesteps the
+// jsonb-operator ambiguity entirely.
+// ─────────────────────────────────────────────────────────────────────────
+
+const interpolate = (value: unknown, nodes: Node[]): void => {
+  if (value instanceof Sql) { for (const nd of value.nodes) nodes.push(nd); return }
+  if (value instanceof Identifier) { nodes.push({ k: 'id', v: value.parts }); return }
+  if (value instanceof Raw) { nodes.push({ k: 'text', v: value.text }); return }
+  if (value instanceof Single) { nodes.push({ k: 'value', v: value.value }); return }
+
+  // An array becomes a parenthesised list — the `IN ${ids}` form.
+  if (Array.isArray(value)) {
+    nodes.push({ k: 'text', v: '(' })
+    value.forEach((item, idx) => {
+      if (idx > 0) nodes.push({ k: 'text', v: ',' })
+      interpolate(item, nodes)
+    })
+    nodes.push({ k: 'text', v: ')' })
+    return
+  }
+
+  nodes.push({ k: 'value', v: value })
+}
+
+/**
+ * The `sql` tagged template — the recommended way to write a query.
+ *
+ * Every `${interpolation}` is ALWAYS a bound parameter, so you cannot forget to
+ * parameterise something. Nothing is scanned for `?`, so Postgres' jsonb `?`
+ * operators need no escaping. Fragments nest, so queries compose.
+ *
+ * @example
+ * ```ts
+ * pg(sql`SELECT * FROM users WHERE id = ${id}`)
+ *
+ * // Composition — sql.empty is the "off" branch; never concatenate strings.
+ * const active = onlyActive ? sql`AND active = ${true}` : sql.empty
+ * pg(sql`SELECT * FROM users WHERE org = ${org} ${active}`)
+ *
+ * // An array interpolates as a parenthesised list.
+ * pg(sql`SELECT * FROM users WHERE id IN ${[1, 2, 3]}`)
+ * // { text: 'SELECT * FROM users WHERE id IN ($1,$2,$3)', values: [1, 2, 3] }
+ * ```
+ */
+interface SqlTag {
+  (strings: TemplateStringsArray, ...values: unknown[]): Sql
+  /**
+   * A dynamic identifier, quoted for the dialect. Use this for table/column
+   * names — no driver can bind an identifier to a placeholder.
+   *
+   * Note: quoting makes an identifier case-sensitive, and Postgres folds
+   * unquoted names to lower case — `sql.id('userName')` means a column literally
+   * named `userName`, not `username`.
+   *
+   * @example
+   * ```ts
+   * pg(sql`SELECT * FROM ${sql.id('public', 'users')}`)  // "public"."users"
+   * mysql(sql`SELECT * FROM ${sql.id('my table')}`)      // `my table`
+   * ```
+   */
+  id(...parts: string[]): Identifier
+  /**
+   * Unescaped SQL text — the one unsafe helper. NEVER pass user input. Map it
+   * to a fixed set of allowed values first.
+   *
+   * @example
+   * ```ts
+   * const dir = { asc: 'ASC', desc: 'DESC' }[input] || 'ASC'   // allow-list
+   * pg(sql`SELECT * FROM t ORDER BY id ${sql.raw(dir)}`)
+   * ```
+   */
+  raw(text: string): Raw
+  /**
+   * Bind a value as exactly ONE parameter. Needed for arrays, which otherwise
+   * expand into a parenthesised list — use this for a Postgres array or jsonb
+   * column.
+   *
+   * @example
+   * ```ts
+   * pg(sql`SELECT * FROM t WHERE tags = ${sql.value(['a', 'b'])}`)
+   * // { text: 'SELECT * FROM t WHERE tags = $1', values: [['a', 'b']] }
+   * ```
+   */
+  value(value: unknown): Single
+  /**
+   * Join fragments/values with a separator — for a variable number of clauses.
+   *
+   * @example
+   * ```ts
+   * const conds = [sql`age >= ${18}`, sql`country = ${'CZ'}`]
+   * pg(sql`SELECT * FROM users WHERE ${sql.join(conds, ' AND ')}`)
+   * ```
+   */
+  join(items: readonly unknown[], separator?: string): Sql
+  /** A fragment that renders to nothing — the "off" branch of a conditional. */
+  readonly empty: Sql
+}
+
+const tag = (strings: TemplateStringsArray, ...values: unknown[]): Sql => {
+  const nodes: Node[] = []
+  for (let i = 0; i < strings.length; i++) {
+    if (strings[i]) nodes.push({ k: 'text', v: strings[i] })
+    if (i < values.length) interpolate(values[i], nodes)
+  }
+  return new Sql(nodes)
+}
+
+export const sql: SqlTag = Object.assign(tag, {
+  id: (...parts: string[]): Identifier => new Identifier(parts),
+  raw: (text: string): Raw => new Raw(text),
+  value: (value: unknown): Single => new Single(value),
+  join: (items: readonly unknown[], separator = ', '): Sql => {
+    const nodes: Node[] = []
+    items.forEach((item, idx) => {
+      if (idx > 0) nodes.push({ k: 'text', v: separator })
+      interpolate(item, nodes)
+    })
+    return new Sql(nodes)
+  },
+  empty: new Sql([]),
+})
+
+const buildSql = (dialect: Dialect, fragment: Sql): BuildResult => {
+  const r = new Renderer(dialect)
+  return r.result(renderNodes(r, fragment.nodes))
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Public entry points
+// ─────────────────────────────────────────────────────────────────────────
+
+/** A dialect-bound builder. Accepts a `sql` fragment, a partials array, an
+ *  argument list of partials, or a single ready SQL string. */
+export interface Build {
+  (fragment: Sql): BuildResult
+  (partials: readonly unknown[]): BuildResult
+  (...partials: unknown[]): BuildResult
+  /**
+   * A builder for a server whose lexing settings differ from the defaults —
+   * `mysql.withMode({ ansiQuotes: true })`. Returns a new builder; the original
+   * is unchanged. Only affects the `?` partials API (the `sql` tag never lexes).
+   */
+  withMode(mode: Mode): Build
+}
+
+const build = (dialect: Dialect, args: unknown[], mode: Mode): BuildResult => {
+  if (args.length === 1) {
+    const only = args[0]
+    if (only instanceof Sql) return buildSql(dialect, only)
+    if (Array.isArray(only)) return buildPartials(dialect, only.slice(), mode)
+    if (!isMarker(only)) {
+      // A single ready string (or nothing) — nothing to bind.
+      return { text: only == null ? '' : String(only) }
+    }
+  }
+  return buildPartials(dialect, args, mode)
+}
+
+const makeBuild = (dialect: Dialect, mode: Mode): Build => {
+  const builder = ((...args: unknown[]) => build(dialect, args, mode)) as Build
+  builder.withMode = (extra: Mode): Build =>
+    makeBuild(dialect, Object.assign({}, mode, extra))
+  return builder
+}
+
+/**
+ * Postgres (`pg`) builder — renders `$1, $2, …` placeholders.
+ *
+ * @example Tagged template (recommended — every `${}` is always parameterised)
+ * ```ts
+ * const q = pg(sql`SELECT * FROM users WHERE id = ${id}`)
+ * // { text: 'SELECT * FROM users WHERE id = $1', values: [id] }
+ * const { rows } = await client.query(q.text, q.values)
+ * ```
+ *
+ * @example Classic `?` partials
+ * ```ts
+ * pg(['SELECT * FROM users WHERE id = ?', id])
+ * pg(['UPDATE users SET ?', { age: 37 }, 'WHERE id = ?', id])
+ * // { text: 'UPDATE users SET age=$1 WHERE id = $2', values: [37, id] }
+ * ```
+ */
+export const pg: Build = makeBuild('pg', {})
+
+/**
+ * MySQL (`mysql` / `mysql2`) builder — keeps `?` placeholders.
+ *
+ * Prefer the driver's `execute()` over `query()`: mysql2's `query()` escapes
+ * values client-side with backslashes, which is wrong under
+ * `sql_mode=NO_BACKSLASH_ESCAPES`. `execute()` binds server-side.
+ *
+ * @example
+ * ```ts
+ * const q = mysql(sql`SELECT * FROM users WHERE id = ${id}`)
+ * // { text: 'SELECT * FROM users WHERE id = ?', values: [id] }
+ * const [rows] = await conn.execute(q.text, q.values)
+ * ```
+ */
+export const mysql: Build = makeBuild('mysql', {})
+
+/** Default export: `{ pg, mysql, sql }`, mirroring the classic
+ *  `require('simple-builder')` shape. */
+const simpleBuilder = { pg, mysql, sql }
+export default simpleBuilder
